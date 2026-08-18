@@ -1,4 +1,4 @@
-/* ai_ext.c  -  amber-ai 1.0.0: the C half of the Amber AI co-pilot.
+/* ai_ext.c  -  amber-ai 2.0.0: the C half of the Amber AI co-pilot.
  *
  * This file is the ONLY thing that touches Amber's internals, and it does so
  * exclusively through the published extension seam in Amber 1.9.5's
@@ -64,7 +64,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define AMBER_AI_VERSION "1.0.0"
+#define AMBER_AI_VERSION "2.0.0"
 
 /* Copy a K char vector (or symbol) into a fresh NUL-terminated C string. */
 static char *cstr(A v) {

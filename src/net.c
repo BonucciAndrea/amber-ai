@@ -1,4 +1,4 @@
-/* net.c  -  amber-ai 1.0.0 zero-dependency POSIX HTTP bridge.  See net.h.
+/* net.c  -  amber-ai 2.0.0 zero-dependency POSIX HTTP bridge.  See net.h.
  *
  * Everything here is plain C99 + POSIX.  The feature-test macro below is what
  * makes `cc -std=c99 -c src/net.c` see poll(2), getaddrinfo(3) and fcntl(2):
@@ -433,7 +433,7 @@ int am_net_post(const char *url, const char *body, int timeout_ms,
     if (snprintf(head, sizeof head,
                  "POST %s HTTP/1.1\r\n"
                  "Host: %s:%s\r\n"
-                 "User-Agent: amber-ai/1.0.0\r\n"
+                 "User-Agent: amber-ai/2.0.0\r\n"
                  "Content-Type: application/json\r\n"
                  "Accept: application/json\r\n"
                  "Connection: close\r\n"

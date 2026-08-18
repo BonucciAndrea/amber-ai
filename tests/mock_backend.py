@@ -56,7 +56,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, obj, status=200):
-        body = json.dumps(obj).encode()
+        # Compact separators, byte-for-byte like ollama: the installer's model
+        # probe parses this output, so the mock must not be tidier than the
+        # real thing or CI would validate a shape users never see.
+        body = json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

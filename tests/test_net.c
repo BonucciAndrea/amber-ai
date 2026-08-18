@@ -1,4 +1,4 @@
-/* tests/test_net.c  -  amber-ai 1.0.0 unit tests for the POSIX HTTP bridge.
+/* tests/test_net.c  -  amber-ai 2.0.0 unit tests for the POSIX HTTP bridge.
  *
  * Standalone, like tests/test_simd.c: it links ONLY src/net.c, provides its
  * own main(), and never touches the interpreter.
@@ -177,7 +177,7 @@ int main(void) {
     size_t n = 0;
     int rc;
 
-    printf("test_net: amber-ai 1.0.0 POSIX HTTP bridge\n");
+    printf("test_net: amber-ai 2.0.0 POSIX HTTP bridge\n");
 
     /* ---- 1. URL validation ------------------------------------------------ */
     ck(am_net_set_url("http://127.0.0.1:11434/api/generate") == AMNET_OK, "accepts a plain http URL");

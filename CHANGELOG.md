@@ -1,5 +1,77 @@
 # Changelog
 
+## 2.0.0 — cross-platform CI, hardened install, and the shell integration
+
+No change to what the agent does; every change here is about it working on machines other than
+the one it was written on.
+
+### macOS and strict `-std=c99`
+
+`src/net.c` already carried `_DARWIN_C_SOURCE`, so the extension itself was never the file that
+broke — but it is rebuilt *into* Amber by `install.sh`, so an engine that would not compile on
+Darwin meant an extension that would not install there either. Amber 1.9.5 now guards every
+translation unit that puts itself into strict POSIX mode (`src/m.c`, `a.c`, `arena.c`, `trace.c`)
+with `_GNU_SOURCE` / `_DEFAULT_SOURCE` / `_DARWIN_C_SOURCE` above the first `#include`, plus a
+`MAP_ANON` → `MAP_ANONYMOUS` fallback. See Amber's own changelog for the full account; the short
+version is that defining `_POSIX_C_SOURCE` *hides* BSD extensions on Darwin and does not on glibc,
+which is why the failure was invisible on Linux.
+
+### `readlink -f` removed from every script
+
+GNU coreutils only; BSD readlink gained `-f` in macOS 12.3 (2022). `install.sh`, `uninstall.sh`,
+`setup-ollama.sh` and `tests/run_tests.sh` all used it to find their own directory, so on an older
+Mac they resolved to an empty path and operated on the wrong folder. All four now use an
+`am_scriptdir` helper built on POSIX `readlink` plus `cd -P`, verified against a shim that rejects
+`-f` exactly as BSD does.
+
+### `install.sh`
+
+* **Toolchain pre-check.** The rebuild needs a C compiler, so a missing one is now caught *before*
+  any file is copied, with the exact package command for the platform (`xcode-select --install`,
+  `apt-get`, `dnf`, ...) instead of a wall of compiler output after a half-finished install.
+* **Homebrew prefix detection.** A shell that has never run `brew shellenv` has neither
+  `/opt/homebrew/bin` (Apple Silicon) nor `/usr/local/bin` (Intel) on `PATH`; both are probed.
+* **Executable bits.** Repaired across **both** trees before anything else runs.
+* **A four-state backend probe.** *Nothing listening* / *live Ollama* / *live Ollama with no models
+  pulled* / *port held by something that is not an Ollama* are now four distinct messages with
+  four distinct fixes, rather than one "nothing is listening".
+* **WSL2 networking.** On WSL2 the installer additionally probes the Windows host via
+  `ip route show default`, because WSL2 runs in its own network namespace and Windows' `127.0.0.1`
+  is not WSL's — the symptom of which was a "nothing is listening" message pointing at a perfectly
+  healthy Ollama on the other side of the boundary. If it finds one it prints the exact
+  `AMBER_AI_URL` to export (computed at runtime, since the host IP changes on reboot); if it does
+  not, it prints the `OLLAMA_HOST=0.0.0.0` + firewall + `.wslconfig networkingMode=mirrored`
+  options.
+* **Model-list parsing fixed.** The probe's `sed` required `"name":"x"` with no whitespace, so any
+  backend that pretty-prints its JSON produced an empty model list — reported as "no models
+  pulled" when the backend was fully populated. It now tolerates whitespace around the colon, and
+  `tests/mock_backend.py` emits compact JSON so CI validates the shape users actually see.
+
+### CI
+
+`.github/workflows/ci.yml` now runs on **`ubuntu-latest` and `macos-latest`**, with `gcc` and
+`clang` on each (the macOS `gcc` leg installs a real Homebrew GCC and resolves its versioned name
+at run time rather than pinning `gcc-14`). `actions/checkout@v4` and `actions/setup-python@v5`
+pinned to 3.12.
+
+Because a GitHub runner has no GPU and no Ollama daemon, the integration job starts
+`tests/mock_backend.py` on 11434 before the suite. It waits for the listener rather than
+`sleep 2` — a blind sleep is both slower than necessary and still racy on a loaded runner — and
+fails the job with a clear annotation if the backend never comes up. The mock speaks the real
+HTTP that `src/net.c` parses over a real loopback socket, so the transport, the deadlines and the
+JSON extraction are genuinely exercised; only the model is fake.
+
+A third `scripts` job runs shellcheck, greps for any reintroduction of `readlink -f`, and asserts
+the **executable bit is committed** — every script in the published repository was mode `100644`,
+so a fresh clone answered the README's first command with `Permission denied`.
+
+### Documentation
+
+`README.md` gains a Shell integration section, `INSTALL.md` a per-platform alias section that
+names the four plausible-but-broken variants and why each fails, and `TROUBLESHOOTING.md` entries
+for "the alias does nothing" and for a port that is open but not answering `/api/tags`.
+
+
 ## 1.0.0 — first release as a standalone package
 
 `amber-ai` began life as the `\ai` agent inside Amber 2.0.0. This release takes it out of the

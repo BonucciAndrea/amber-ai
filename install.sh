@@ -29,8 +29,24 @@
 # =============================================================================
 set -u
 
-HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-AI_VERSION="1.0.0"
+# ---- portable script-directory resolution ---------------------------------
+# `readlink -f` is GNU coreutils. BSD/macOS readlink gained -f only in macOS
+# 12.3 (2022), so on any older Mac every script that used it resolved to an
+# empty path and cd'd to the wrong place -- or silently to $HOME. This uses
+# only POSIX readlink (no -f) plus `cd -P`, which behaves identically on macOS,
+# Linux, WSL2 and BusyBox, and still follows a chain of symlinks.
+am_scriptdir() {
+  am__p=$1
+  while [ -h "$am__p" ]; do
+    am__d=$(CDPATH='' cd -- "$(dirname -- "$am__p")" && pwd -P) || return 1
+    am__l=$(readlink -- "$am__p")
+    case $am__l in /*) am__p=$am__l ;; *) am__p=$am__d/$am__l ;; esac
+  done
+  CDPATH='' cd -- "$(dirname -- "$am__p")" || return 1
+  pwd -P
+}
+HERE="$(am_scriptdir "$0")"
+AI_VERSION="2.0.0"
 NEED_ABI=1
 DEFAULT_URL="${AMBER_AI_URL:-http://127.0.0.1:11434/api/generate}"
 DEFAULT_MODEL="${AMBER_AI_MODEL:-qwen2.5-coder:0.5b}"
@@ -66,6 +82,69 @@ printf '%samber-ai %s%s  -  local, offline AI co-pilot for Amber\n' "$B" "$AI_VE
 echo
 
 # =============================================================================
+# 0. platform + toolchain
+# =============================================================================
+# The rebuild in step 4 invokes the C compiler, so a missing toolchain has to be
+# caught HERE with an actionable message rather than surfacing as a wall of
+# compiler noise after the files have already been copied.
+step "checking your platform and toolchain"
+
+UNAME=$(uname -s 2>/dev/null || echo unknown)
+IS_WSL=0
+case "$(uname -r 2>/dev/null)" in *[Mm]icrosoft*|*WSL*) IS_WSL=1 ;; esac
+case "$UNAME" in
+  Darwin) PLATFORM="macOS" ;;
+  Linux)  PLATFORM=$([ "$IS_WSL" = 1 ] && echo "WSL2" || echo "Linux") ;;
+  *)      PLATFORM="$UNAME" ;;
+esac
+ok "platform: $PLATFORM ($(uname -m 2>/dev/null || echo '?'))"
+
+if [ "$PLATFORM" = "macOS" ]; then
+  # Homebrew lives at /opt/homebrew on Apple Silicon and /usr/local on Intel;
+  # a shell that has never run `brew shellenv` has neither on PATH.
+  if ! command -v brew >/dev/null 2>&1; then
+    for bp in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+      [ -x "$bp" ] && { eval "$("$bp" shellenv)" 2>/dev/null || true; break; }
+    done
+  fi
+  command -v brew >/dev/null 2>&1 && ok "homebrew: $(brew --prefix)" \
+    || note "homebrew not found (only needed if you install ollama with it)"
+fi
+
+CC_FOUND=""
+for c in "${CC:-}" cc gcc clang; do
+  [ -n "$c" ] || continue
+  command -v "$c" >/dev/null 2>&1 && { CC_FOUND="$c"; break; }
+done
+if [ -z "$CC_FOUND" ]; then
+  case "$PLATFORM" in
+    macOS) die "no C compiler found. Install Apple's Command Line Tools:
+
+    xcode-select --install
+
+Then re-run:  ./install.sh $*" ;;
+    *) if command -v apt-get >/dev/null 2>&1; then
+         die "no C compiler found:
+
+    sudo apt-get update && sudo apt-get install -y build-essential
+
+Then re-run:  ./install.sh $*"
+       elif command -v dnf >/dev/null 2>&1; then
+         die "no C compiler found:
+
+    sudo dnf install -y gcc make
+
+Then re-run:  ./install.sh $*"
+       else
+         die "no C compiler found. Install gcc or clang with your package manager, then re-run."
+       fi ;;
+  esac
+fi
+ok "compiler: $CC_FOUND"
+command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
+  || note "neither curl nor wget found -- the backend probe will fall back to a raw TCP connect"
+
+# =============================================================================
 # 1. locate Amber
 # =============================================================================
 step "locating your Amber installation"
@@ -78,7 +157,7 @@ CANDIDATES=""
 CANDIDATES="$CANDIDATES $HERE/../amber $PWD/../amber $PWD/amber $HOME/amber $HOME/src/amber $HOME/code/amber $HOME/projects/amber"
 # an `amber` already on PATH, or the target of an `a` alias
 if command -v amber >/dev/null 2>&1; then
-  CANDIDATES="$CANDIDATES $(dirname "$(readlink -f "$(command -v amber)")")"
+  CANDIDATES="$CANDIDATES $(am_scriptdir "$(command -v amber)")"
 fi
 
 AMBER=""
@@ -144,6 +223,18 @@ fi
 # =============================================================================
 # 2. copy the C half into ext/
 # =============================================================================
+# A clone or a zip can arrive with mode 644 on every script, in which case the
+# very first line of the README answers with "Permission denied". Fix both trees
+# rather than assuming either is right.
+step "fixing permissions"
+PFIX=0
+for f in "$HERE"/*.sh "$HERE"/tests/*.sh "$HERE"/tests/*.py \
+         "$AMBER/a" "$AMBER/build.sh" "$AMBER/install.sh" "$AMBER"/tests/*.sh "$AMBER"/tests/*.py; do
+  [ -f "$f" ] || continue
+  [ -x "$f" ] || { chmod +x "$f" 2>/dev/null && PFIX=$((PFIX+1)); }
+done
+[ "$PFIX" -gt 0 ] && ok "made $PFIX script(s) executable" || ok "all scripts already executable"
+
 step "installing the transport + glue into $AMBER/ext/"
 mkdir -p "$AMBER/ext" || die "cannot create $AMBER/ext"
 for f in net.c net.h ai_ext.c; do
@@ -255,8 +346,13 @@ fi
 
 MODELS=""
 if [ "$BACKEND" = 1 ] && command -v curl >/dev/null 2>&1; then
+  # Tolerate whitespace after the colon: ollama emits compact JSON, but a proxy
+  # or a pretty-printing stand-in emits `"name": "x"`, and the strict pattern
+  # silently produced an EMPTY model list against those -- which read as "no
+  # models pulled" when the backend was in fact fully populated.
   MODELS=$(curl -fsS --max-time 2 "http://$HOST:$PORT/api/tags" 2>/dev/null \
-           | tr ',' '\n' | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | tr '\n' ' ')
+           | tr ',' '\n' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+           | tr '\n' ' ')
 fi
 
 if [ "$BACKEND" != 0 ]; then
@@ -268,20 +364,76 @@ if [ "$BACKEND" != 0 ]; then
       *) warn "the default model is not pulled yet:   ollama pull $DEFAULT_MODEL"
          note "or point Amber at one you have:   \\ai model <name>" ;;
     esac
+  elif [ "$BACKEND" = 1 ]; then
+    # /api/tags answered but listed nothing: an ollama with no models pulled.
+    warn "the backend answered but has no models pulled yet"
+    note "    ollama pull $DEFAULT_MODEL"
+  elif [ "$BACKEND" = 2 ]; then
+    # Something holds the port but did not answer /api/tags. That is either a
+    # non-ollama backend (llama.cpp, an OpenAI-compatible server) -- fine -- or
+    # an unrelated process squatting on 11434, which is the single most common
+    # "why does nothing work" report.
+    warn "the port is open but did not answer ollama's /api/tags"
+    note "that is expected for llama.cpp or an OpenAI-compatible server."
+    note "if you did NOT start one, something else is squatting on the port:"
+    note "    sudo ss -lptn 'sport = :$PORT'      # linux / wsl2"
+    note "    lsof -iTCP:$PORT -sTCP:LISTEN -P -n  # macos"
+    note "move ollama instead of fighting for it:  OLLAMA_HOST=127.0.0.1:11500 ollama serve"
+    note "then:  \\ai url http://127.0.0.1:11500/api/generate"
   fi
 else
-  warn "nothing is listening on $HOST:$PORT -- that is fine, install is complete"
+  warn "nothing is listening on $HOST:$PORT -- that is fine, the install is complete"
   note "the agent is a no-op until a backend is running; it never blocks the REPL"
   note "and it never contacts anything but this address."
+
+  # ---- WSL2: the loopback that is not the loopback you think it is ----------
+  # WSL2 runs in its own network namespace, so Windows' 127.0.0.1 is NOT WSL's.
+  # An Ollama installed on the Windows side is invisible from here unless
+  # mirrored networking is on -- and the symptom is exactly this message, which
+  # sends people hunting for a broken install that is working perfectly.
+  if [ "$IS_WSL" = 1 ]; then
+    echo
+    warn "you are on WSL2, where 127.0.0.1 is WSL's loopback, NOT Windows'."
+    WINHOST=""
+    if command -v ip >/dev/null 2>&1; then
+      WINHOST=$(ip route show default 2>/dev/null | awk '/default/ {print $3; exit}')
+    fi
+    if [ -n "$WINHOST" ]; then
+      WBACK=0
+      if command -v curl >/dev/null 2>&1; then
+        curl -fsS --max-time 2 "http://$WINHOST:$PORT/api/tags" >/dev/null 2>&1 && WBACK=1
+      fi
+      if [ "$WBACK" = 1 ]; then
+        ok "FOUND an Ollama on the WINDOWS host at $WINHOST:$PORT"
+        note "point Amber at it -- add this to your shell rc:"
+        note "    export AMBER_AI_URL=\"http://\$(ip route show default | awk '/default/{print \$3}'):$PORT/api/generate\""
+        note "(the host IP changes on reboot, so compute it rather than hard-coding it)"
+      else
+        note "nothing on the Windows host either ($WINHOST:$PORT)."
+        note "if your Ollama runs on WINDOWS, do BOTH of these:"
+        note "  1. on Windows:  setx OLLAMA_HOST \"0.0.0.0:$PORT\"   (then restart Ollama)"
+        note "  2. allow it through the firewall, in an admin PowerShell:"
+        note "     New-NetFirewallRule -DisplayName 'Ollama $PORT' -Direction Inbound \\"
+        note "       -LocalPort $PORT -Protocol TCP -Action Allow"
+        note "  3. back in WSL:  export AMBER_AI_URL=\"http://$WINHOST:$PORT/api/generate\""
+        note "simplest alternative: install ollama INSIDE wsl2, and none of this applies."
+        note "or, on Windows 11 22H2+, put this in %UserProfile%\\.wslconfig and run"
+        note "\`wsl --shutdown\`:   [wsl2]  networkingMode=mirrored"
+      fi
+    fi
+  fi
+
   echo
-  note "to start one (all local, no account, no telemetry):"
-  note "    curl -fsSL https://ollama.com/install.sh | sh     # linux / wsl2"
-  note "    brew install ollama                              # macos"
-  note "    ollama serve &"
+  note "to start a backend (all local, no account, no telemetry):"
+  case "$PLATFORM" in
+    macOS) note "    brew install ollama && brew services start ollama" ;;
+    *)     note "    curl -fsSL https://ollama.com/install.sh | sh"
+           note "    sudo systemctl enable --now ollama    # or: ollama serve &" ;;
+  esac
   note "    ollama pull $DEFAULT_MODEL"
-  note "or run  ./setup-ollama.sh  from this folder, which walks you through it."
-  note "See INSTALL.md for per-OS instructions and TROUBLESHOOTING.md if the"
-  note "port is already in use."
+  note "or run  ./setup-ollama.sh  from this folder, which walks you through it"
+  note "and asks before every system change."
+  note "See INSTALL.md for per-OS steps and TROUBLESHOOTING.md for port conflicts."
 fi
 
 # =============================================================================

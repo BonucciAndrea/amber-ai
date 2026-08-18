@@ -1,5 +1,5 @@
 / ============================================================================
-/ lib/ai.k  -  amber-ai 1.0.0: the in-REPL AI agent, written in Amber.
+/ lib/ai.k  -  amber-ai 2.0.0: the in-REPL AI agent, written in Amber.
 / .
 / Everything the agent DECIDES lives here, in Amber:
 /   * schema inspection      what tables / vectors / attributes this session holds
@@ -24,7 +24,7 @@
 / Loaded whole-file (multi-line definitions are fine), not line-by-line.
 / ============================================================================
 
-ai.VER:"1.0.0"
+ai.VER:"2.0.0"
 
 / ---- primitives -----------------------------------------------------------
 ai.st:{`aio[-1]}

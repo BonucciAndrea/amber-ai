@@ -1,4 +1,4 @@
-/* net.h  -  amber-ai 1.0.0 zero-dependency POSIX HTTP bridge.
+/* net.h  -  amber-ai 2.0.0 zero-dependency POSIX HTTP bridge.
  *
  * A small, strictly-timed HTTP/1.1 client used by the in-REPL AI agent
  * (lib/ai.k, the `\ai` commands and the editor hint hook in src/ai_ext.c).

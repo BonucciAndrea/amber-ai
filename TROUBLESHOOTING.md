@@ -71,6 +71,22 @@ brew services restart ollama
 # or, if you installed the app: quit it from the menu bar and reopen it
 ```
 
+### `./install.sh` told me the port is open but "did not answer /api/tags"
+
+That is the installer distinguishing four states rather than guessing, and it means: something
+holds 11434 but it is not an Ollama. Two possibilities.
+
+*It is a different backend* — llama.cpp or an OpenAI-compatible server have no `/api/tags`, and
+everything works; just point Amber at the right path:
+
+```text
+amber> \ai url http://127.0.0.1:11434/completion              # llama.cpp
+amber> \ai url http://127.0.0.1:11434/v1/chat/completions     # openai-compatible
+```
+
+*It is an unrelated process*, which is the common case. Find it, then move Ollama rather than
+fighting for the port (see below).
+
 ### It is something else entirely
 
 Move Ollama, do not fight for the port:
@@ -238,6 +254,27 @@ Remove any `rlwrap` from the alias, wrapper script, `.desktop` entry or tmux com
 Amber with `./a`. If you genuinely need canonical-mode reads (a screen reader, a dumb terminal,
 an editor subshell), `AMBER_NO_EDIT=1 ./a` turns the native editor off — and `./a` then invokes
 `rlwrap -n -a` for you, which is silent.
+
+### `amber-ai` is not a command / the alias does nothing
+
+```sh
+echo $SHELL                      # which shell actually logs you in
+grep -n "amber" ~/.zshrc ~/.bashrc ~/.bash_profile ~/.profile 2>/dev/null
+```
+
+Three causes, in order of how often they happen:
+
+1. **The block went into a file your shell does not read.** macOS logs you in with `/bin/zsh`,
+   which reads `~/.zshrc` and never `~/.bashrc`. Re-run `amber/install.sh`, which detects the
+   login shell rather than the shell it happens to be running under.
+2. **You have not re-read the rc file.** `source ~/.zshrc`, or open a new terminal.
+3. **You are in a script, not an interactive shell.** Aliases do not exist there at all. Use
+   `ln -sf "$AMBER_HOME/a" ~/.local/bin/amber` instead.
+
+If the alias exists but starts a REPL where `\ai` is unknown, it is aliasing the bare `amber`
+binary rather than the `a` launcher — the binary has no `repl.k` and therefore no `\ai`. And if
+it opens and immediately exits, the alias is passing `lib/ai.k` as a script argument; remove it,
+`repl.k` loads the library itself via `lib/ext.k`.
 
 ### Ghost text shows as literal escape codes, or the suggestion will not go away
 

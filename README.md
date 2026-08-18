@@ -11,7 +11,7 @@
 
 **A local, offline AI co-pilot for [Amber](https://github.com/bonucciandrea/amber).**
 
-![version](https://img.shields.io/badge/version-1.0.0-orange)
+![version](https://img.shields.io/badge/version-2.0.0-orange)
 ![requires](https://img.shields.io/badge/requires-amber%20≥%201.9.5-blue)
 ![license](https://img.shields.io/badge/license-AGPLv3-blue)
 ![tests](https://img.shields.io/badge/tests-184%20passing-brightgreen)
@@ -65,13 +65,21 @@ cd amber-ai
 The path is optional — `./install.sh` finds a sibling `../amber`, `$AMBER_HOME`, `~/amber`, or an
 `amber` on your `PATH`. It then:
 
+0. checks your platform and toolchain, and prints the exact package command for
+   *your* system if a C compiler is missing (the rebuild in step 4 needs one);
 1. checks the target's version and extension ABI, and refuses politely if they do not match;
 2. copies `src/net.c`, `src/net.h`, `src/ai_ext.c` → `<amber>/ext/`;
 3. copies `lib/ai.k` → `<amber>/lib/`, and registers it in `<amber>/lib/ext.k`;
 4. runs `<amber>/build.sh`, linking the agent **into the binary you already had**;
 5. verifies: the `` `ai`` / `` `aio`` verbs, `\ai`, and Amber's own 178-case suite;
-6. probes `127.0.0.1:11434` and tells you exactly what it found;
-7. prints the commands to start using it.
+6. repairs the executable bit on every script in **both** trees — a fresh clone can arrive mode
+   `644`, in which case `./install.sh` answers with `Permission denied`;
+7. probes `127.0.0.1:11434` and tells you exactly what it found — distinguishing *nothing
+   listening*, *a live Ollama*, *a live Ollama with no models pulled*, and *something else
+   squatting on the port*, each with its own fix. On **WSL2** it additionally probes the Windows
+   host (`ip route show default`), because WSL2's `127.0.0.1` is not Windows' — see
+   [INSTALL.md](INSTALL.md#wsl2);
+8. prints the commands to start using it.
 
 Nothing goes anywhere else. No root, no `PATH` change, no shared object, no `LD_PRELOAD`,
 nothing system-wide. Reverse all of it with `./uninstall.sh /path/to/amber`.
@@ -92,6 +100,45 @@ RHEL/Fedora, with systemd). **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** covers 
 already being in use, terminal rendering, and custom endpoints.
 
 Without a backend the agent is a **no-op**: it says so once, and the REPL is exactly Amber.
+
+## Shell integration
+
+`amber`'s own `install.sh` writes a managed block into your shell rc. Add the AI alias to it — or
+let `amber/install.sh` write the whole block for you, which already includes this line:
+
+```sh
+# amber-ai -> the full REPL with the local co-pilot pointed at your model server
+# and given a longer answer budget. lib/ai.k is loaded automatically by repl.k
+# via lib/ext.k, so it must NOT be passed as a script argument.
+alias amber-ai='AMBER_NATIVE=1 AMBER_AI=1 AMBER_AI_URL="http://127.0.0.1:11434/api/generate" AMBER_AI_TIMEOUT_MS=10000 "$AMBER_HOME/a"'
+
+# Agent off for one session, without editing anything:
+alias amber-noai='AMBER_AI=0 "$AMBER_HOME/a"'
+```
+
+Two things that look like they should work and do not:
+
+* **Do not pass `lib/ai.k` as an argument.** `amber $AMBER_HOME/lib/ai.k` runs the agent library
+  as a *script* and exits. `repl.k` already loads it through `lib/ext.k` at startup; the alias only
+  has to start the REPL.
+* **Alias the launcher `a`, not the `amber` binary.** The bare binary has no stdlib and no
+  `repl.k`, so `\ai` — which is dispatched by `repl.k` — does not exist there.
+
+The default 2000 ms answer budget is often too tight for the *first* question after a cold start,
+because the backend is loading weights. Raise it in any of three scopes:
+
+```text
+amber> \ai timeout 10000            # this session
+```
+```sh
+export AMBER_AI_TIMEOUT_MS=10000     # every session (the alias above does this)
+```
+```text
+amber> `aio[(2;10000)]               # programmatic; key 2 is the answer budget
+```
+
+Leave the **Tab** budget small (`AMBER_AI_TAB_MS`, default 100 ms): it runs on the keystroke path,
+so raising it makes typing feel laggy. `\ai status` shows both.
 
 ## Using it
 

@@ -1,5 +1,5 @@
 / ============================================================================
-/ tests/test_ai.k  -  amber-ai 1.0.0 agent suite.
+/ tests/test_ai.k  -  amber-ai 2.0.0 agent suite.
 / GNU AGPLv3 - see LICENSE and NOTICE.
 / ----------------------------------------------------------------------------
 / Run it from anywhere:

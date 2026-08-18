@@ -15,6 +15,7 @@ no-op until one appears.
 **Contents**
 
 * [Common prerequisites](#common-prerequisites)
+* [Shell aliases (all platforms)](#shell-aliases)
 * [WSL2 (Windows Subsystem for Linux)](#wsl2)
 * [macOS (Apple Silicon and Intel)](#macos)
 * [Linux (Ubuntu / Debian)](#linux-ubuntu--debian)
@@ -47,6 +48,59 @@ cd /path/to/amber && git pull && ./build.sh
 **Disk and memory for the model.** `qwen2.5-coder:0.5b` is ~400 MB and runs on a laptop CPU;
 `qwen2.5-coder:7b` is ~4.7 GB and wants a GPU or a lot of patience. Start with the small one —
 for schema-shaped questions it is usually enough.
+
+---
+
+<a name="shell-aliases"></a>
+## Shell aliases (all platforms)
+
+`amber/install.sh` writes a managed, idempotent block into the rc file your **login** shell
+actually reads — `~/.zshrc` for zsh, `~/.bash_profile` for macOS bash, `~/.bashrc` for Linux bash,
+`~/.profile` otherwise. Re-running it replaces the block instead of appending a second copy. It
+already contains the AI alias:
+
+```sh
+# === Amber - native engine configuration ===================================
+export AMBER_HOME="$HOME/amber"          # the checkout itself; there is no bin/
+
+alias amber='AMBER_NATIVE=1 "$AMBER_HOME/a"'
+alias amberx='"$AMBER_HOME/amber"'       # bare interpreter, for scripts and pipes
+
+alias amber-ai='AMBER_NATIVE=1 AMBER_AI=1 AMBER_AI_URL="http://127.0.0.1:11434/api/generate" AMBER_AI_TIMEOUT_MS=10000 "$AMBER_HOME/a"'
+alias amber-noai='AMBER_AI=0 "$AMBER_HOME/a"'
+```
+
+Apply it without opening a new terminal:
+
+```sh
+source ~/.zshrc      # or ~/.bashrc / ~/.bash_profile / ~/.profile
+```
+
+**Which rc file is mine?** `echo $SHELL` names your login shell. On macOS that is `/bin/zsh` on
+every version since Catalina, so `~/.zshrc` — `~/.bashrc` is read by *nothing* there and is the
+single most common reason an alias "does not work".
+
+**WSL2** uses the Linux rules (`~/.bashrc` for bash), not Windows'. If you launch Amber from
+Windows Terminal it is still WSL's shell that reads the rc file.
+
+**fish** does not use this syntax; `install.sh` detects it and prints the fish equivalent rather
+than writing bash into `config.fish`.
+
+Four things that look right and are not:
+
+| written | why it fails |
+|---|---|
+| `export PATH="$AMBER_HOME/bin:$PATH"` | Amber has no `bin/`. It is one self-contained folder. |
+| `alias amber="$AMBER_HOME/amber"` | that is the bare interpreter: no `repl.k`, no stdlib, no `\ai`. Alias `a`. |
+| `... "$AMBER_HOME/amber$AMBER_HOME/lib/ai.k"` | a missing space concatenates the two paths into one that does not exist. And `lib/ai.k` must **not** be passed as an argument — `repl.k` loads it via `lib/ext.k` already. |
+| `AMBER_MEM_MB=4096` | no such variable. The heap is `mmap`'d with `MAP_NORESERVE` and sized lazily by the OS; there is nothing to tune. `AMBER_THREADS` *is* real and pins the vector engine's lanes. |
+
+For scripts, cron and CI — where aliases do not exist — symlink the launcher instead of putting
+the repo root on `PATH` (which would also expose `install.sh` and `demo.sh` as commands):
+
+```sh
+mkdir -p ~/.local/bin && ln -sf "$AMBER_HOME/a" ~/.local/bin/amber
+```
 
 ---
 
@@ -514,7 +568,7 @@ loopback model server does not need one, and adding one would mean adding a depe
 
 ```text
 amber> \ai status
-Amber AI agent v1.0.0
+Amber AI agent v2.0.0
   agent      : on
   tab assist : on
   endpoint   : http://127.0.0.1:11434/api/generate
