@@ -57,6 +57,15 @@ res(){ if [ "$1" = 0 ]; then echo "  -> PASS ($2)"; else echo "  -> FAIL ($2)"; 
 CC="${CC:-cc}"
 mkdir -p o
 
+# Restore the executable bit on everything this harness EXECUTES rather than
+# sources. ./install.sh and ./uninstall.sh are invoked as commands below, so at
+# mode 644 the run dies with "./install.sh: Permission denied" and every later
+# stage fails as a CONSEQUENCE -- including "the \`aio verb did not register",
+# which then blames the extension seam for a lost file mode. The bits are
+# committed (the "shell hygiene" job enforces 100755), but a zip export, a tar
+# restore or a copy across a non-POSIX filesystem drops them.
+chmod +x install.sh uninstall.sh setup-ollama.sh tests/*.sh tests/*.py 2>/dev/null || true
+
 # --------------------------------------------------------------- 1. transport
 say "tests/test_net.c (src/net.c standalone)"
 if $CC -w -O2 -std=c99 -Isrc -pthread -o o/test_net tests/test_net.c src/net.c -lm 2>o/net.log; then
@@ -97,6 +106,15 @@ mkdir -p "$WORK/amber"
 # start from a stock tree: drop anything a previous install left behind
 rm -f "$WORK/amber/ext/net.c" "$WORK/amber/ext/net.h" "$WORK/amber/ext/ai_ext.c" \
       "$WORK/amber/lib/ai.k" "$WORK/amber/lib/ext.k"
+# `tar` faithfully reproduces the SOURCE tree's modes, so a stock `git clone` of
+# Amber whose ./a is 644 yields a copy whose ./a is 644 too. install.sh's own
+# verification pipes into "$AMBER/a" with stderr discarded, so the resulting
+# "Permission denied" is swallowed and the empty output is reported as
+#   error: the `aio verb did not register -- the extension did not link.
+# i.e. a file mode is misdiagnosed as a broken extension seam. Set the bits on
+# the copy explicitly; it is a throwaway, so this can disturb nothing.
+chmod +x "$WORK/amber/a" "$WORK/amber/build.sh" 2>/dev/null || true
+chmod +x "$WORK/amber"/tests/*.sh "$WORK/amber"/tests/*.py 2>/dev/null || true
 echo "  -> staged $WORK/amber"
 
 # ------------------------------------------------------------- 3. the installer

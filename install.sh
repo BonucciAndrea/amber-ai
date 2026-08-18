@@ -298,11 +298,28 @@ fi
 if [ "$DO_BUILD" = 1 ] && [ "$DO_TEST" = 1 ]; then
   step "verifying"
 
+  # The rebuild above just produced these; assert they are runnable before the
+  # probes below try to run them. Without it, a launcher left at mode 644 makes
+  # every probe produce EMPTY output, and the first one reports that as "the
+  # extension did not link" -- sending the reader into ext/ to hunt a bug that
+  # is really a lost file mode.
+  chmod +x "$AMBER/a" "$AMBER/amber" "$AMBER/build.sh" 2>/dev/null || true
+
   # (a) the verbs exist. `aio -1 returns a 7-element status list.
-  out=$(printf '#`aio[-1]\n\\\\\n' | AMBER_AI=0 "$AMBER/a" 2>/dev/null | tr -d '\r')
-  case "$out" in *7*) ok "\`aio verb registered" ;;
-                 *)   die "the \`aio verb did not register -- the extension did not link.
-Check that $AMBER/ext/ai_ext.c exists and re-run $AMBER/build.sh by hand." ;; esac
+  # stderr is CAPTURED rather than discarded: it is the only place a permission
+  # error, a missing loader or a REPL diagnostic can announce itself, and
+  # throwing it away is what let this check misreport its own cause.
+  VLOG="$AMBER/.amber-ai-verify.log"
+  out=$(printf '#`aio[-1]\n\\\\\n' | AMBER_AI=0 "$AMBER/a" 2>"$VLOG" | tr -d '\r')
+  case "$out" in *7*) ok "\`aio verb registered"; rm -f "$VLOG" ;;
+                 *)   VERR=$(sed -n '1,5p' "$VLOG" 2>/dev/null | tr '\n' ' '); rm -f "$VLOG"
+                      die "the \`aio verb did not register -- the extension did not link.
+Check that $AMBER/ext/ai_ext.c exists and re-run $AMBER/build.sh by hand.
+
+  the launcher printed : ${out:-(nothing)}
+  the launcher's stderr: ${VERR:-(empty)}
+  ls -l \$AMBER/a       : $(ls -l "$AMBER/a" 2>&1)
+  ls -l \$AMBER/ext     : $(ls "$AMBER/ext" 2>&1 | tr '\n' ' ')" ;; esac
 
   # (b) \ai reaches lib/ai.k. Offline on purpose: the agent is switched off, so
   #     this tests the dispatch path and nothing else.

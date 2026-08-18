@@ -140,23 +140,65 @@ jobs:
         # sleep is both slower than needed and still racy on a loaded runner.
         run: |
           cd amber-ai
-          python3 tests/mock_backend.py 11434 &
+          chmod +x tests/mock_backend.py
+          # nohup + a log file, not a bare `&`.
+          #   * a bare `&` leaves the server in the STEP's process group. When the
+          #     step's shell exits, the macOS runner tears that group down, so the
+          #     listener that answered here is gone by the next step. nohup (plus
+          #     detaching stdio) is what survives the handover.
+          #   * python3 buffers stdout/stderr when they are not a tty, so a
+          #     traceback -- "Address already in use", a bad --shape, an import
+          #     error -- died in the buffer with the process and the step could
+          #     only report the SYMPTOM: "mock backend never came up". -u makes
+          #     the reason reach the log, and the log is printed on failure below.
+          nohup python3 -u tests/mock_backend.py 11434 > /tmp/mock.log 2>&1 &
           echo $! > /tmp/mock.pid
+          disown || true
+
+          # Readiness probe: ~60s, up from ~10s. A cold macOS runner can take
+          # tens of seconds just to import http.server the first time, and the
+          # old budget was tight enough that a slow runner failed a healthy
+          # server. --retry-connrefused is the point of the curl: without it curl
+          # treats ECONNREFUSED as fatal and never retries at all.
           up=0
-          for i in $(seq 1 50); do
-            if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.3); sys.exit(0 if s.connect_ex(('127.0.0.1',11434))==0 else 1)"; then
-              up=1; echo "mock backend up after $i attempt(s)"; break
+          for i in $(seq 1 120); do
+            if curl -fsS --max-time 2 --retry 10 --retry-delay 1 --retry-connrefused \
+                    http://127.0.0.1:11434/api/tags > /tmp/mock.probe 2>/dev/null; then
+              up=1; echo "mock backend up after ${i}s"; break
             fi
-            sleep 0.2
+            # A dead server will never come up: stop waiting the full minute for it.
+            if ! kill -0 "$(cat /tmp/mock.pid)" 2>/dev/null; then
+              echo "::error::mock_backend.py exited during startup"; break
+            fi
+            sleep 0.5
           done
-          [ "$up" = 1 ] || { echo "::error::mock backend never came up on 127.0.0.1:11434"; exit 1; }
-          curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags
+          if [ "$up" != 1 ]; then
+            echo "::error::mock backend never came up on 127.0.0.1:11434"
+            echo "---- mock_backend.py output ----"; cat /tmp/mock.log || true
+            echo "---- listeners on 11434 ----"
+            (lsof -nP -iTCP:11434 -sTCP:LISTEN || netstat -an | grep 11434 || true)
+            exit 1
+          fi
+          cat /tmp/mock.probe
 
       - name: Run AI Integration Tests
         run: |
           cd amber-ai
-          chmod +x tests/run_tests.sh
+          chmod +x install.sh uninstall.sh setup-ollama.sh tests/run_tests.sh tests/*.py
+          # The engine under test is the checkout built two steps ago. Its ./a is
+          # a tracked SHELL SCRIPT, and run_tests.sh tars this tree into a
+          # throwaway copy mode-for-mode -- so a launcher that is 644 here is 644
+          # in the copy, install.sh's probe reads back nothing, and the run fails
+          # as "the \`aio verb did not register -- the extension did not link",
+          # blaming ext/ for a file mode. Assert the bits on the SOURCE tree.
+          chmod +x "$GITHUB_WORKSPACE/amber/a" "$GITHUB_WORKSPACE/amber/build.sh"
+          chmod +x "$GITHUB_WORKSPACE/amber/amber" 2>/dev/null || true
+          ls -l "$GITHUB_WORKSPACE/amber/a"
           ./tests/run_tests.sh "$GITHUB_WORKSPACE/amber"
+
+      - name: Mock backend log
+        if: always()
+        run: cat /tmp/mock.log || true
 
       - name: Stop mock backend
         if: always()
@@ -191,7 +233,16 @@ jobs:
       - name: No GNU-only constructs in portable scripts
         run: |
           set -e
-          if grep -rn --include='*.sh' -E '(^|[^#])readlink[[:space:]]+-f' . ; then
+          # Match only a real USE. The previous pattern was '(^|[^#])readlink -f',
+          # whose [^#] was meant to skip comments -- but every one of these
+          # scripts documents the hazard as:
+          #     # `readlink -f` is GNU coreutils. BSD/macOS ...
+          # where the character before "readlink" is a BACKTICK, not the '#'.
+          # So [^#] matched, the job flagged its own documentation, and this step
+          # failed on every run in a tree with no `readlink -f` in it at all.
+          # Anchoring at the line start instead means any '#' ahead of the match
+          # excludes the line, while `x=$(readlink -f "$0")` still trips it.
+          if grep -rn --include='*.sh' -E '^[^#]*readlink[[:space:]]+-f' . ; then
             echo "::error::readlink -f is not portable; use the am_scriptdir helper"
             exit 1
           fi

@@ -12,8 +12,29 @@
  *
  * Amber - GNU AGPLv3 - see LICENSE and NOTICE.
  */
+/* ---- feature-test macros: MUST precede every system header in this TU ------
+ * _POSIX_C_SOURCE is what makes -std=c99 see poll(2), fcntl(2) and pthreads.
+ * On Darwin, though, asking for strict POSIX also switches the BSD extensions
+ * OFF: <netinet/in.h> guards INADDR_LOOPBACK (and INADDR_ANY, and the whole
+ * u_int32_t family) behind
+ *     #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)
+ * so defining the first without the second is exactly the `net / macos-latest /
+ * clang` failure:
+ *     tests/test_net.c:120:31: error: use of undeclared identifier
+ *     'INADDR_LOOPBACK'
+ * glibc keeps INADDR_LOOPBACK visible under plain _POSIX_C_SOURCE, which is why
+ * both Linux legs stay green and only macOS breaks. The missing macro is the
+ * bug, NOT a missing #include -- <netinet/in.h> and <arpa/inet.h> were already
+ * here, and adding more headers cannot un-hide a guarded definition.
+ *
+ * src/net.c, which this file links against, already carries this exact pair;
+ * the test that exercises it had drifted out of sync. _DARWIN_C_SOURCE is inert
+ * on Linux (glibc has never defined it), so this is additive on every platform. */
 #if !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
+#endif
+#if !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
 #endif
 
 #include "net.h"
@@ -23,6 +44,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>

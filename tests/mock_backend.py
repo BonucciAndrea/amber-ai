@@ -111,11 +111,29 @@ def main():
         else:
             port = int(a)
         i += 1
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    sys.stderr.write("mock_backend: 127.0.0.1:%d shape=%s\n" % (port, SHAPE))
+    # A CI runner that reuses a machine can leave the previous run's socket in
+    # TIME_WAIT on this fixed port; without SO_REUSEADDR the bind then fails and
+    # the only symptom the workflow could observe was "never came up".
+    ThreadingHTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer.daemon_threads = True
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        # Say WHY, and say it on the way out. CI starts this in the background
+        # with its output redirected to a log, so a silent exit is indistinguishable
+        # from a server that is merely slow -- which is how a port collision came
+        # to be reported as a startup timeout.
+        sys.stderr.write("mock_backend: cannot bind 127.0.0.1:%d: %s\n" % (port, e))
+        sys.stderr.flush()
+        return 1
+    sys.stderr.write("mock_backend: listening on 127.0.0.1:%d shape=%s\n" % (port, SHAPE))
     sys.stderr.flush()
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
