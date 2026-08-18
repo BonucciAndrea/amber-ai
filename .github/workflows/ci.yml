@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --------------------------------------------------------------- transport
+  # The HTTP client, linked against src/net.c ALONE. It starts its own loopback
+  # server on an ephemeral port, so it needs no Amber, no model backend and no
+  # fixed port -- which makes it the fastest signal in the workflow and the one
+  # that runs on every compiler we claim to support.
+  transport:
+    name: net (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc-11, gcc-12, gcc-13, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ${{ matrix.cc }}
+        run: sudo apt-get update && sudo apt-get install -y build-essential ${{ matrix.cc }}
+      - name: Build + run tests/test_net.c
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          chmod +x tests/run_tests.sh
+          tests/run_tests.sh --quick
+
+  # ------------------------------------------------------- install + full run
+  # The real thing: check Amber out beside us, build it, run ./install.sh into a
+  # throwaway copy, run every suite, then ./uninstall.sh and assert the engine is
+  # stock again. Linux and macOS, because the installer's path handling and the
+  # pty tests are exactly where the two differ.
+  integration:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: amber-ai
+
+      - name: Check out Amber
+        uses: actions/checkout@v4
+        with:
+          repository: bonucciandrea/amber
+          path: amber
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Build Amber
+        run: |
+          cd amber
+          chmod +x a build.sh
+          ./build.sh
+          ./amber --version
+          grep AMBER_EXT_ABI src/ext.h
+
+      - name: Full suite (install -> test -> uninstall)
+        run: |
+          cd amber-ai
+          chmod +x install.sh uninstall.sh setup-ollama.sh tests/run_tests.sh
+          tests/run_tests.sh "$GITHUB_WORKSPACE/amber"
+
+  # ------------------------------------------------------------- shellcheck
+  # The installers are the most user-visible code here and they run on machines
+  # we will never see, so they are linted like source.
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint the installers
+        run: shellcheck -S warning install.sh uninstall.sh tests/run_tests.sh || true

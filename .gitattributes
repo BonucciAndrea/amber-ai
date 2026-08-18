@@ -1,0 +1,12 @@
+# amber-ai installs .c/.h/.k files into an Amber tree whose REPL loads .k
+# libraries line-by-line. Force LF on checkout for every source and script so a
+# Windows (autocrlf) checkout cannot inject CR bytes that break per-line
+# evaluation or a shell script's shebang.
+*.k    text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+install.sh   text eol=lf
+uninstall.sh text eol=lf

@@ -1,0 +1,14 @@
+# build artifacts
+/o/
+*.o
+*.so
+*.a
+
+# test scratch
+/tests/o/
+.amber_ai_test_memory.k
+
+# editor / OS cruft
+*~
+.DS_Store
+*Zone.Identifier
