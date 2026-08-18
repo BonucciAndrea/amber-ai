@@ -1,0 +1,28 @@
+amber-ai
+========
+
+amber-ai is distributed under the GNU Affero General Public License v3
+(see LICENSE).
+
+amber-ai is an extension for Amber (https://github.com/bonucciandrea/amber),
+which it links into at build time through Amber's published extension seam
+(src/ext.h). Amber's own interpreter core is derived from a k array-language
+interpreter released under the GNU AGPLv3 by its original author (ngn); that
+upstream copyright is recorded in Amber's own NOTICE and is repeated here
+because a build of Amber that includes this extension is a combined work.
+Neither Amber nor amber-ai is affiliated with, nor a distribution of, that
+project.
+
+All amber-ai work -- the agent in lib/ai.k, the POSIX HTTP transport in
+src/net.c, the extension glue in src/ai_ext.c, the installers, the test
+suites and the documentation -- is (c) 2026 the Amber authors, under the
+GNU AGPLv3.
+
+THIRD-PARTY SERVICES
+--------------------
+amber-ai contacts exactly one network address: the value of AMBER_AI_URL,
+which defaults to http://127.0.0.1:11434 -- a model server running on the
+same machine. It bundles no model weights, embeds no API key, contains no
+telemetry, and has no fallback to any hosted service. Model backends such as
+Ollama or llama.cpp are separate programs under their own licences and are
+neither included nor required.

@@ -1,0 +1,264 @@
+/ ============================================================================
+/ tests/test_ai.k  -  amber-ai 1.0.0 agent suite.
+/ GNU AGPLv3 - see LICENSE and NOTICE.
+/ ----------------------------------------------------------------------------
+/ Run it from anywhere:
+/     ./amber tests/test_ai.k
+/ Exits non-zero if any case fails.
+/ ----------------------------------------------------------------------------
+/ This suite NEVER needs a model backend, and never touches the network in a
+/ way that can block: the endpoint is pointed at 127.0.0.1:9 (the discard port,
+/ closed on any sane host) so what is measured is the transport's FAILURE path
+/ -- which is the path that actually has to be bullet-proof, because a REPL
+/ must stay completely usable when ollama is not running.
+/x
+/ Covered here:
+/   1. `aio  switches, the shipped defaults (agent ON, Tab assist ON), and
+/           runtime reconfiguration of url / model / budgets
+/   2. `ai   graceful failure with no backend: a return code, never an exception
+/   3. persistent memory: record -> file -> reload round trip, dedupe, cap,
+/      and the exact on-disk line format that src/ln.c mines for Tab candidates
+/   4. relevance ranking, i.e. the retrieval half of the few-shot memory
+/   5. schema inspection (tables, attributes, dicts, vectors)
+/   6. prompt assembly
+/   7. the \ai command parser and every sub-command that needs no network
+/x
+/ ai.say / ai.o are rebound to collectors for the duration, so the suite stays
+/ quiet AND the agent's printed output becomes assertable.
+/x
+/ STYLE (see the gotcha list in tests/harness.k): no bracketed [a;b] block ever
+/ appears inside an argument list, and no top-level statement is left with a
+/ value -- either would silently change what runs.
+/ ============================================================================
+DIR:{$[#p:"/"/-1_"/"\x;p;"."]}`argv 1
+LOAD:{{. x^(`c$13)}'0:x;}
+LOAD DIR,"/../amber.k"
+LOAD DIR,"/harness.k"
+/x lib/ai.k carries multi-line definitions, so it is evaluated WHOLE-FILE.
+. `c$1:DIR,"/../lib/ai.k"
+
+/x ---- sandbox: a private memory file and a guaranteed-dead endpoint --------
+MEM:"/tmp/amber_ai_test_memory.k"
+DEAD:"http://127.0.0.1:9/api/generate"
+ai.MEMF::MEM
+ai.M::()
+OUT:()
+ai.say::{OUT::OUT,,x;}
+ai.o::{OUT::OUT,,x;}
+set:{`aio x;}
+st:{`aio[-1]}
+on:{(st[])0}
+tab:{(st[])1}
+url:{(st[])2}
+mdl:{(st[])3}
+qms:{(st[])4}
+tms:{(st[])5}
+grab:{OUT::();.[x;,y;{}];r:OUT;OUT::();r}
+joined:{$[0=#x;"";"\n"/x]}
+say:{joined grab[x;y]}
+has:{[hay;ndl]0<#ss[hay;ndl]}
+set[(0;DEAD)]
+
+/x ============================ 1. switches ================================
+t[`statusShape;    #st[];            7]
+t[`urlSet;         url[];            DEAD]
+t[`onByDefault;    on[];             1]
+t[`tabOnByDefault; tab[];            1]
+set[0]
+t[`switchOff;      on[];             0]
+set[1]
+t[`switchOn;       on[];             1]
+set[2]
+t[`tabOff;         tab[];            0]
+set[3]
+t[`tabOn;          tab[];            1]
+tk[`retryIsSafe;   "`aio[4]"]
+set[(1;"test-model")]
+t[`modelSet;       mdl[];            "test-model"]
+set[(2;1500)]
+t[`qaBudgetSet;    qms[];            1500]
+set[(3;60)]
+t[`tabBudgetSet;   tms[];            60]
+set[(0;"not a url")]
+t[`badUrlRejected; url[];            DEAD]
+set[(0;"https://example.com/v1")]
+t[`tlsUrlRejected; url[];            DEAD]
+set[(1;"")]
+t[`emptyModelRejected; mdl[];        "test-model"]
+
+/x ==================== 2. transport: no backend, no drama ==================
+r:`ai[("sys";"hello";200;16)]
+t[`aiPairShape;    #r;               2]
+t[`aiRcIsInt;      @r 0;             `i]
+t[`aiFailsCleanly; 0<r 0;            1]
+t[`aiMsgIsText;    `C~@r 1;          1]
+t[`aiMsgNonEmpty;  0<#r 1;           1]
+tk[`aiPlainString; "`ai[\"just a prompt\"]"]
+tk[`aiOddListSafe; "`ai[(1 2 3;4 5 6)]"]
+te[`aiRejectsAtom; "`ai[42]"]
+/x switched off, the agent answers without opening a socket at all
+set[0]
+t[`offSaysSo;      has[say[ai.q;"anything"];"switched off"];1]
+set[1]
+
+/x ==================== 3. persistent memory round trip =====================
+ai.M::()
+t[`addFirst;       ai.add["q";"select px from trades";"trades"];1]
+t[`addSecond;      ai.add["q";"select sym from quotes";"quotes"];1]
+t[`memCount;       #ai.M;            2]
+t[`addDedupes;     ai.add["q";"select px from trades";"trades"];1]
+t[`stillTwo;       #ai.M;            2]
+t[`hitsBumped;     (ai.M 0)2;        2]
+t[`addRejectsEmpty;ai.add["q";"";"c"];0]
+t[`addRejectsType; ai.add["q";42;"c"];0]
+tk[`saveRuns;      "ai.save[]"]
+ai.M::()
+t[`clearedBeforeLoad;#ai.M;          0]
+t[`loadRoundTrip;  ai.load[];        2]
+t[`loadedTextA;    (ai.M 0)3;        "select px from trades"]
+t[`loadedTextB;    (ai.M 1)3;        "select sym from quotes"]
+t[`loadedKind;     (ai.M 0)0;        "q"]
+t[`loadedCtx;      (ai.M 0)4;        "trades"]
+/x the on-disk line is exactly the shape src/ln.c mines for Tab candidates
+ln:ai.line[("q";1755512345;3;"select sym,px from trades";"trades")]
+t[`lineFormat;     7#ln;             "ai.rec["]
+t[`lineQuotesText; has[ln;"\"select sym,px from trades\""];1]
+ai.M::()
+. ln
+t[`lineIsEvaluable;#ai.M;            1]
+/x embedded quotes and backslashes survive the file round trip
+ai.M::()
+esc:ai.add["q";"a\"b\\c";"ctx"]
+sv:ai.save[]
+ai.M::()
+ld:ai.load[]
+t[`escapeRoundTrip;(ai.M 0)3;        "a\"b\\c"]
+/x the cap is enforced, newest first out the back
+ai.M::()
+fill:{ai.add["q";"line ",$x;"c"]}'!20
+ai.MAX::5
+cap:ai.trim[]
+t[`capEnforced;    #ai.M;            5]
+t[`capKeepsNewest; (*|ai.M)3;        "line 19"]
+ai.MAX::400
+t[`forget;         ai.forget[];      1]
+t[`forgotten;      #ai.M;            0]
+
+/x ==================== 4. relevance ranking ===============================
+ai.M::()
+a1:ai.add["q";"select avg px by sym from trades";"trades"]
+a2:ai.add["q";"til 10";"x"]
+a3:ai.add["s";"trades:table(time sym px)";"trades"]
+t[`topPicksRelevant;*ai.top["avg px by sym";1;"q"];"select avg px by sym from trades"]
+t[`topRespectsN;   #ai.top["anything";1;"q"];1]
+t[`topFiltersKind; #ai.top["trades";9;"s"];1]
+t[`topAllKinds;    #ai.top["trades";9;""];3]
+ai.M::()
+t[`topEmptyIsSafe; #ai.top["q";3;"q"];0]
+t[`wordsSplit;     ai.words"select px, avg(px) from t";("select";"px";"avg";"px";"from";,"t")]
+t[`normLowersAndSplits;ai.norm"SELECT A,B";"select a b"]
+
+/x ==================== 5. schema inspection ===============================
+trades:+`time`sym`px`sz!(`sa 1 2 3 4;`pa[`a`a`b`b];10 11 12 13.0;100 200 300 400)
+dd:`a`b!(1;2)
+vv:til 100
+desc:ai.ndesc`trades
+t[`tableDesc;      has[desc;"trades:table("];1]
+t[`tableSortedCol; has[desc;"time:I`s"];1]
+t[`tablePartedCol; has[desc;"sym:S`p"];1]
+t[`tableFloatCol;  has[desc;"px:F"];1]
+t[`tableRowCount;  has[desc;"[4 rows]"];1]
+t[`vectorDesc;     ai.ndesc`vv;      "vv:I[100]"]
+t[`dictDesc;       has[ai.ndesc`dd;"dd:dict("];1]
+ctx:ai.ctx[]
+t[`ctxHasTable;    has[ctx;"trades:table("];1]
+t[`ctxHasVector;   has[ctx;"vv:I[100]"];1]
+t[`ctxHidesStdlib; has[ctx;"movavg"];0]
+t[`ctxNames;       has[ai.ctxnames[];"trades"];1]
+t[`descNeverThrows;ai.ndesc0`nosuchname;"nosuchname:?"]
+t[`attrOfSorted;   ai.attr(+trades)`time;"`s"]
+t[`attrOfPlain;    ai.attr(+trades)`px;""]
+
+/x ==================== 6. prompt assembly =================================
+ai.M::()
+a4:ai.add["q";"select px from trades where px>10";"trades"]
+p:ai.prompt["Do the thing";"the question"]
+t[`promptHasSchema;    has[p;"### Session schema"];1]
+t[`promptHasTable;     has[p;"trades:table("];1]
+t[`promptHasExamples;  has[p;"### Recent lines and examples"];1]
+t[`promptReplaysMemory;has[p;"select px from trades where px>10"];1]
+t[`promptHasTask;      has[p;"Do the thing"];1]
+t[`promptHasInput;     has[p;"the question"];1]
+t[`emptyBlockIsEmpty;  #ai.blk["h";""];0]
+t[`shortTruncates;     #ai.short 500#"x";200]
+t[`shortTakesFirstLine;ai.short"one\ntwo";"one"]
+
+/x ==================== 7. the \ai command parser ==========================
+t[`word;           ai.word"profile trades";"profile"]
+t[`rest;           ai.rest"profile trades";"trades"]
+t[`wordNoArg;      ai.word"status";  "status"]
+t[`restNoArg;      ai.rest"status";  ""]
+t[`restTrimsSpace; ai.rest"why   boom";"boom"]
+t[`helpRuns;       #grab[ai.cmd;"help"];#ai.HELP]
+t[`helpMentionsProfile;has[say[ai.cmd;"help"];"\\ai profile"];1]
+t[`emptyIsHelp;    #grab[ai.cmd;""]; #ai.HELP]
+t[`statusRuns;     0<#grab[ai.cmd;"status"];1]
+t[`statusShowsModel;has[say[ai.cmd;"status"];"model"];1]
+q1:grab[ai.cmd;"off"]
+t[`cmdOff;         on[];             0]
+q2:grab[ai.cmd;"on"]
+t[`cmdOn;          on[];             1]
+q3:grab[ai.cmd;"tab off"]
+t[`cmdTabOff;      tab[];            0]
+q4:grab[ai.cmd;"tab on"]
+t[`cmdTabOn;       tab[];            1]
+t[`cmdModelQuery;  has[say[ai.cmd;"model"];"test-model"];1]
+q5:grab[ai.cmd;"model other-model"]
+t[`cmdModelSet;    mdl[];            "other-model"]
+t[`cmdUrlQuery;    has[say[ai.cmd;"url"];DEAD];1]
+q6:grab[ai.cmd;"timeout 900"]
+t[`cmdTimeout;     qms[];            900]
+q7:grab[ai.cmd;"tabtimeout 45"]
+t[`cmdTabTimeout;  tms[];            45]
+tk[`cmdRetry;      "ai.cmd\"retry\""]
+/x backend probing: the shell helper must strip the trailing newline every
+/x command leaves behind (comparing raw output against "yes" never matched),
+/x and \ai serve must be a registered sub-command. Starting a real backend is
+/x deliberately NOT exercised here -- this suite never touches the network.
+t[`line1Chomps;    ai.line1"yes\n";  "yes"]
+/x a one-character result is a char VECTOR here, not the char atom "a"
+t[`line1FirstOnly; ai.line1"a\nb\n"; ,"a"]
+t[`line1Trims;     ai.line1"  a  \n";,"a"]
+t[`line1Empty;     ai.line1"";       ""]
+t[`serveRegistered;in[`serve;ai.K];  1]
+t[`shReturnsText;  ai.sh"echo probe-ok";"probe-ok"]
+t[`shSurvivesJunk; ai.sh"exit 7";     ""]
+t[`ollamaIsBoolean;in[ai.ollama[];0 1];1]
+t[`ollamaCached;   0<#ai.CACHE;       1]
+tk[`cmdMemory;     "ai.cmd\"memory\""]
+tk[`cmdLearn;      "ai.cmd\"learn\""]
+ai.ERR::""
+t[`whyWithNoError; has[say[ai.cmd;"why"];"no recent error"];1]
+serr:ai.seterr"'type mismatch"
+t[`seterrSticks;   ai.ERR;           "'type mismatch"]
+spre:ai.pre"x"
+t[`preKeepsLastErr;ai.ERR;           "'type mismatch"]
+t[`profileNeedsArg;has[say[ai.cmd;"profile"];"usage"];1]
+t[`profileRejectsNonTable;has[say[ai.cmd;"profile vv"];"not a table"];1]
+t[`optimizeNeedsArg;has[say[ai.cmd;"optimize"];"usage"];1]
+t[`explainNeedsArg;has[say[ai.cmd;"explain"];"usage"];1]
+/x the profile REPORT needs no backend, only the advice on top of it does
+rep:ai.prof[`trades;trades]
+t[`profReportHeader;has[rep;"table trades"];1]
+t[`profColumnCount;has[rep;"4 columns"];1]
+t[`profRowCount;   has[rep;"4 rows"];1]
+t[`profDistinct;   has[rep;"distinct"];1]
+t[`profAttribute;  has[rep;"`p"];    1]
+/x an unknown sub-command is a question; with no backend it still fails cleanly
+t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
+/x and nothing above may have left the interpreter in a bad state
+tk[`stillAlive;    "1+1"]
+
+hexpect[122]
+hreport"AMBER AI AGENT"
+$[FAILN;`exit 1;]
