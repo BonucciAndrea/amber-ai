@@ -440,7 +440,7 @@ ai.hl"  lines instantly. Only when nothing matches does it ask the model, inside
 ai.hl"  a hard millisecond budget, and it shows the idea as dim ghost text that a"
 ai.hl"  second Tab (or the Right arrow) accepts. Nothing is inserted for you."
 ai.hl""
-ai.hl"  Backend:  ollama serve   &   ollama run qwen2.5-coder:0.5b"
+ai.hl"  Backend:  ollama serve   &   ollama run qwen2.5-coder:3b"
 ai.hl"  Env:      AMBER_AI AMBER_AI_TAB AMBER_AI_URL AMBER_AI_MODEL"
 ai.hl"            AMBER_AI_TIMEOUT_MS AMBER_AI_TAB_MS AMBER_AI_MEMORY"
 ai.help:{ai.say'ai.HELP;1}
