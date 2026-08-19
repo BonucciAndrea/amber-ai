@@ -439,6 +439,7 @@ ai.status:{s:ai.st[]
   ai.say"  model      : ",s 3
   ai.say"  budgets    : ",($s 4),"ms answer, ",($s 5),"ms tab   (last call ",($s 6),"ms)"
   ai.say"  boxed out  : ",$[ai.BOX;"on";"off"]
+  ai.say"  keep alive : ",ai.ka[]," (\\ai warm preloads; AMBER_AI_KEEP_ALIVE overrides)"
   ai.say"  memory     : ",($#ai.M),ai.plural[#ai.M;" record"]," in ",ai.memf[]
   ai.say"  seed corpus: ",($#ai.SEED),ai.plural[#ai.SEED;" example"],$[0=#ai.SEED;" (lib/amber_ai_memory.k not found)";" shipped"]
   ai.say"  workspace  : ",ai.ctx[]
@@ -466,6 +467,7 @@ ai.hl""
 ai.hl"  \\ai on | off          master switch (default ON)"
 ai.hl"  \\ai tab on | tab off  inline Tab suggestions (default ON)"
 ai.hl"  \\ai status            endpoint, model, budgets, memory, workspace"
+ai.hl"  \\ai warm [ms]         preload the model so the first question is not slow"
 ai.hl"  \\ai box [on|off]      frame answers in a box (off when piping output)"
 ai.hl"  \\ai memory            what the agent has learned so far"
 ai.hl"  \\ai learn             record the current schema into memory"
@@ -505,6 +507,47 @@ ai.c.status:{x;ai.status[]}
 ai.c.on:{x;`aio[1];ai.say"ai: agent on";1}
 ai.c.off:{x;`aio[0];ai.say"ai: agent off";1}
 ai.c.retry:{x;`aio[4];ai.say"ai: the endpoint will be retried on the next call";1}
+/ ---- \ai warm : pay the model load ONCE, deliberately -----------------------
+/ keep_alive only starts helping after a request the backend actually finished.
+/ On a 7B that is the catch: the first question loads ~5GB of weights, which on
+/ CPU takes longer than the answer budget, so the call times out, and the next
+/ one pays the load again. Warming uses its OWN budget and asks for a single
+/ token, so it returns the moment the model is resident rather than when it has
+/ finished writing an answer. After that, keep_alive holds it there.
+ai.WARMMS:120000
+ai.PROBEN:24
+ai.ka:{ai.env[`$"AMBER_AI_KEEP_ALIVE";"30m"]}
+ai.np:{ai.try[{`i$. ai.env[`$"AMBER_AI_NUM_PREDICT";"128"]};0;128]}
+/ round a millisecond figure up to the next whole second, with headroom
+ai.budget:{[ms]120000&1000*1+_0.001*ms*1.5}
+
+/ Warming does two calls on purpose. The first asks for ONE token, so it returns
+/ the moment the weights are resident and measures the LOAD. The second asks for
+/ ai.PROBEN tokens against the now-resident model and measures GENERATION, which
+/ is the term that actually decides whether a 7B fits in the answer budget: load
+/ is paid once, generation is paid per question.
+/ Guessing from the model name would be guessing about the machine. Measure it.
+/ Timing comes from status index 6, the C layer's per-call millisecond figure.
+/ NOT from ai.now, which is epoch SECONDS -- it exists to stamp ai.rec.
+ai.c.warm:{a:trim x
+  ms:$[0<#a;`i$. a;ai.WARMMS]
+  ai.say"ai: loading ",((ai.st[])3)," -- up to ",($ms),"ms"
+  r:`ai[("";"hi";ms;1)]
+  $[0=r 0;;:ai.diag r]
+  d:(ai.st[])6
+  ai.say"ai: loaded in ",($d),"ms; resident for ",ai.ka[]," after each call"
+  r2:`ai[("";"list the numbers one to twenty";ms;ai.PROBEN)]
+  $[0=r2 0;;:1]
+  g:1|(ai.st[])6
+  tp:ai.PROBEN%g%1000
+  n:ai.np[]
+  secs:n%1|tp
+  need:ai.budget[1000*secs]
+  cur:ai.qams[]
+  ai.say"ai: ~",($_0.5+tp)," tok/s, so a ",($n),"-token answer takes about ",($_0.5+secs),"s"
+  $[need>cur;ai.raisebudget[cur;need];ai.say"ai: the ",($cur),"ms answer budget already covers that"]
+  1}
+ai.raisebudget:{[cur;need]`aio[(2;need)];ai.say"ai: answer budget ",($cur),"ms -> ",($ai.qams[]),"ms so answers stop timing out (\\ai timeout N to override)";1}
 ai.c.box:{a:trim x
   $[0=#a;;ai.BOX::~"off"~lower a]
   ai.say"ai: boxed output ",$[ai.BOX;"on";"off"]
@@ -514,8 +557,8 @@ ai.c.forget:{x;ai.forget[];ai.say"ai: memory cleared";1}
 ai.c.learn:{x;ai.dolearn[]}
 ai.c.serve:{x;ai.doserve[]}
 
-ai.K:`help`status`on`off`retry`serve`tab`box`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
-ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.tab;ai.c.box;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
+ai.K:`help`status`on`off`retry`serve`warm`tab`box`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
+ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.c.warm;ai.tab;ai.c.box;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
 ai.D:ai.K!ai.V
 
 / \ai <rest of line>.  Anything that is not a known sub-command is a question.

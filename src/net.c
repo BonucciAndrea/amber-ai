@@ -89,6 +89,13 @@ static int  g_tab_ms = 100;
  * prompt, so no amount of prompt trimming could reach them. */
 static int  g_num_ctx     = 512;
 static int  g_num_predict = 128;
+/* How long the backend should keep the model resident after a request.
+ * Ollama unloads after 5 minutes idle by default, so on a 7B every question
+ * asked more than five minutes after the last one pays the load again --
+ * tens of seconds on CPU, inside the same deadline that has to cover the
+ * generation. Sent per REQUEST, so it needs no OLLAMA_KEEP_ALIVE in the
+ * server's environment and no restart of `ollama serve`. */
+static char g_keep_alive[32] = "30m";
 static int  g_last_ms;
 static long long g_dead_until;   /* circuit breaker deadline (ms)            */
 
@@ -145,6 +152,8 @@ void am_net_init(void) {
      * produces confidently wrong column names rather than an error. */
     g_num_ctx     = env_int("AMBER_AI_NUM_CTX",     512, 128, 32768);
     g_num_predict = env_int("AMBER_AI_NUM_PREDICT", 128,   1,  4096);
+    /* "30m", "1h", "0" to unload at once, "-1" to keep forever. */
+    copy_env("AMBER_AI_KEEP_ALIVE", g_keep_alive, sizeof g_keep_alive);
 }
 
 const char *am_net_url(void)   { am_net_init(); return g_url; }
@@ -691,6 +700,14 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
         sprintf(num, ",\"options\":{\"temperature\":0.0,\"num_ctx\":%d,\"num_predict\":%d}",
                 g_num_ctx, np);
         if (buf_str(&req, num) < 0) goto oom;
+    }
+    /* Keep the model resident. Ollama reads this; llama.cpp and the
+     * OpenAI-compatible servers ignore an unknown key, as with every other
+     * field above. json_escape because it is user-settable. */
+    if (g_keep_alive[0]) {
+        if (buf_str(&req, ",\"keep_alive\":\"") < 0) goto oom;
+        if (json_escape(&req, g_keep_alive) < 0) goto oom;
+        if (buf_str(&req, "\"") < 0) goto oom;
     }
     if (buf_str(&req, "}") < 0) goto oom;
 

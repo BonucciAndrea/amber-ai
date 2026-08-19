@@ -139,6 +139,35 @@ Three things that look like they should work and do not:
   `a` runnable from anywhere. There is likewise no `AMBER_MEM_MB`; the heap is sized by the engine,
   and the tunable that does exist is `AMBER_THREADS`.
 
+### Big models: warm them once
+
+A 7B on CPU generates a few tokens a second, so a 128-token answer can take 30s
+while a 0.5B does it in 4 — and Ollama unloads an idle model after five minutes,
+so the load is paid again and again inside the same deadline. Two things fix it:
+
+```text
+amber> \ai warm            # load the model now, on its own budget, and measure
+```
+
+`\ai warm` asks for a single token, so it returns as soon as the weights are
+resident rather than when an answer is finished. It then times a short
+generation and, if your measured tokens/sec cannot produce a full answer inside
+the current budget, raises the budget and says so. It measures your machine
+rather than guessing from the model's name.
+
+Every request also carries `keep_alive`, so the backend holds the model for 30
+minutes after each call. No `OLLAMA_KEEP_ALIVE` in the server environment, no
+restart of `ollama serve`:
+
+```sh
+export AMBER_AI_KEEP_ALIVE=1h     # or "0" to unload at once, "-1" for forever
+export AMBER_AI_NUM_PREDICT=48    # generation dominates; fewer tokens, faster
+```
+
+`AMBER_AI_NUM_PREDICT` is the biggest single lever after the load: the answer is
+an expression plus two short lines, so 48 is usually plenty and cuts the wait by
+more than half.
+
 The answer budget defaults to 10000 ms. The *first* question after a cold start can still exceed
 it while the backend loads weights, so raise it in any of three scopes:
 
@@ -225,6 +254,9 @@ and deleting the file is always safe.
 | `AMBER_AI_MODEL` | `qwen2.5-coder:0.5b` | any model your backend has |
 | `AMBER_AI_TIMEOUT_MS` | `10000` | answer budget |
 | `AMBER_AI_TAB_MS` | `100` | Tab budget; drop below 50 for an invisible keystroke cost |
+| `AMBER_AI_KEEP_ALIVE` | `30m` | how long the backend keeps the model resident |
+| `AMBER_AI_NUM_PREDICT` | `128` | max tokens generated per answer |
+| `AMBER_AI_NUM_CTX` | `512` | context the backend allocates |
 | `AMBER_AI_MEMORY` | `~/.amber_ai_memory.k` | where memory lives |
 
 ## Architecture

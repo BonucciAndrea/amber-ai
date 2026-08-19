@@ -253,6 +253,13 @@ int main(void) {
         rc = am_net_generate("sys", "user", 3000, 16, &out, &n);
         ck(rc == AMNET_OK, "chunked reply is accepted");
         ck_str(out, "chunked ok", "chunked body is reassembled");
+        /* The payload is the contract with the backend, so assert it on the
+         * wire rather than trusting the builder. num_predict was absent here
+         * for every \ai call until it was captured off a socket like this. */
+        ck(strstr(s.request, "\"stream\":false")      != NULL, "payload: stream is off");
+        ck(strstr(s.request, "\"num_ctx\":512")        != NULL, "payload: num_ctx is bounded");
+        ck(strstr(s.request, "\"num_predict\":16")     != NULL, "payload: num_predict honours the caller");
+        ck(strstr(s.request, "\"keep_alive\":\"30m\"") != NULL, "payload: keep_alive keeps the model resident");
         free(out); out = NULL;
         close(s.fd);
     }
@@ -263,6 +270,10 @@ int main(void) {
         server_url(&s, url, sizeof url); am_net_set_url(url); am_net_clear_backoff();
         rc = am_net_generate("s", "u", 3000, 0, &out, &n);
         ck(rc == AMNET_OK, "llama.cpp shape: request ok");
+        /* max_tokens 0 is what every \ai command passes: the default must still
+         * bound generation, or the model runs on until it feels like stopping. */
+        ck(strstr(s.request, "\"num_predict\":128")    != NULL, "payload: default num_predict applies");
+        ck(strstr(s.request, "\"keep_alive\":\"30m\"") != NULL, "payload: keep_alive on the default path too");
         ck_str(out, "from llama", "llama.cpp shape: \"content\" is extracted");
         free(out); out = NULL; close(s.fd);
     }

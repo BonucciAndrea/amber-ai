@@ -225,6 +225,19 @@ t[`sanCollapsesTabs;   ai.san"a\tb   c";"a b c"]
 t[`sanDropsControl;    ai.san"a",(`c$7),"b";"ab"]
 t[`sanKeepsPlain;      ai.san"select px from trades";"select px from trades"]
 t[`sanPassesNonString; ai.san 42;42]
+/x ---- keeping the model resident -----------------------------------------
+/x keep_alive only starts helping after a call the backend FINISHED, and on a
+/x 7B the first call is the one that times out -- so \ai warm exists to pay the
+/x load on its own budget, asking for a single token.
+t[`warmIsRegistered;   0<#&ai.K=`warm;1]
+t[`keepAliveDefault;   ai.ka[];"30m"]
+t[`numPredictDefault;  ai.np[];128]
+/x the budget is sized from a MEASURED rate, never from the model's name
+t[`budgetRoundsUp;     ai.budget[16000];25000]
+t[`budgetHasHeadroom;  ai.budget[1000]>1000;1]
+t[`budgetIsCapped;     ai.budget[999000];120000]
+/x ai.bump belongs to the memory ranker; the warm helper must not shadow it
+t[`bumpNotShadowed;    ~ai.bump~ai.raisebudget;1]
 t[`promptReplaysMemory;has[pq;"select px from trades where px>10"];1]
 t[`promptHasTask;      has[p;"Do the thing"];1]
 t[`promptHasInput;     has[p;"the question"];1]
@@ -298,6 +311,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[145]
+hexpect[152]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]
