@@ -279,6 +279,43 @@ jobs:
           echo "amber/ext now holds:"
           ls -A amber/ext 2>/dev/null || echo "  (no ext/ yet)"
 
+      # macOS only, and a workaround rather than a repair -- the defect is one
+      # line of tests/run_tests.sh, which this change is scoped out of:
+      #
+      #     left=$(ls "$WORK/amber/ext"/*.c 2>/dev/null | wc -l)
+      #     [ "$left" = 0 ]
+      #
+      # BSD wc pads its count to a fixed width, so that substitution is
+      # "       0" on macOS where GNU wc gives "0". The test compares it as a
+      # STRING, so it is false on every macOS run whatever ext/ actually holds,
+      # and the job dies at "-> FAIL (ext/ is empty again)" -- with uninstall.sh
+      # reported PASS on the line above it and "no trace of amber-ai after
+      # uninstall" PASS on the line below. Nothing is wrong with the uninstall.
+      #
+      # Confirmed by putting a padding wc ahead of GNU wc on Linux: the harness
+      # then fails identically, and passes again with this shim in front of it.
+      #
+      # The shim strips leading blanks and forwards everything else to the real
+      # wc, preserving its exit status. It is deliberately NOT
+      # `brew install coreutils` + a gnubin PATH: that swaps ls, sed, find and
+      # head for GNU versions too, and this project tests BSD portability on
+      # purpose -- that would trade one silent failure for a whole class of them.
+      #
+      # Delete this step once run_tests.sh uses  [ "$left" -eq 0 ].
+      - name: Neutralise BSD wc padding for the harness
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/shim"
+          {
+            echo '#!/bin/sh'
+            echo 'out=$(/usr/bin/wc "$@") || exit $?'
+            echo 'printf "%s\n" "$out" | sed "s/^[[:space:]]*//"'
+          } > "$RUNNER_TEMP/shim/wc"
+          chmod +x "$RUNNER_TEMP/shim/wc"
+          echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
+          printf 'real wc  : [%s]\n' "$(printf '' | /usr/bin/wc -l)"
+          printf 'shimmed  : [%s]\n' "$(printf '' | "$RUNNER_TEMP/shim/wc" -l)"
+
       - name: Run AI Integration Tests
         run: |
           cd amber-ai
