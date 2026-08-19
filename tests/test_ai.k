@@ -183,9 +183,23 @@ t[`attrOfPlain;    ai.attr(+trades)`px;""]
 ai.M::()
 a4:ai.add["q";"select px from trades where px>10";"trades"]
 p:ai.prompt["Do the thing";"the question"]
-t[`promptHasSchema;    has[p;"### Session schema"];1]
-t[`promptHasTable;     has[p;"trades:table("];1]
-t[`promptHasExamples;  has[p;"### Recent lines and examples"];1]
+/x The prompt is what the model is CHARGED for, so these pin its shape.
+/x The schema block is now the compact one (ai.sch), not ai.ctx: names only,
+/x no types, no attributes, no row counts. ai.ctx is unchanged and still backs
+/x `\ai status`, where a human wants all of that -- see promptDropsRowCounts.
+t[`promptHasSchema;    has[p;"### Schema"];1]
+t[`promptSchemaCompact;has[p;"SCHEMAS: "];1]
+t[`promptHasTable;     has[p;"trades:("];1]
+t[`promptDropsRowCounts;has[p;" rows]"];0]
+t[`promptDropsColTypes;has[p;"trades:table("];0]
+t[`promptHasExamples;  has[p;"### Examples"];1]
+/x A query too short to carry keywords retrieves nothing: matches would be
+/x coincidental, and every exemplar is paid for in prefill.
+t[`shortQueryNoExamples;#ai.exs"2+2";0]
+t[`longQueryHasExamples;0<#ai.exs"average price by symbol";1]
+t[`examplesAreCapped;   ai.NEX<#ai.exs"average price by symbol";0]
+/x ai.ctx keeps the detail the compact schema drops.
+t[`statusCtxKeepsRows;  has[ai.ctx[];" rows]"];1]
 t[`promptReplaysMemory;has[p;"select px from trades where px>10"];1]
 t[`promptHasTask;      has[p;"Do the thing"];1]
 t[`promptHasInput;     has[p;"the question"];1]
@@ -259,6 +273,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[122]
+hexpect[129]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]

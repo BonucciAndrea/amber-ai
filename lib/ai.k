@@ -174,7 +174,48 @@ ai.SYS:"You are the assistant built into Amber, a zero-dependency columnar time-
 / a accepted Tab suggestions, p questions previously asked.
 ai.RK:"qap"
 ai.blk:{[h;b]$[0=#b;();(,"### ",h),$[`C~@b;,b;b]]}
-ai.parts:{[task;q](ai.blk["Session schema";ai.ctx[]];ai.blk["Recent lines and examples from this user";ai.top[q;4;ai.RK]];ai.blk["Task";task];ai.blk["Input";q])}
+
+/ ---- what actually goes in the payload ------------------------------------
+/ Measured before changing anything: system 502 chars + prompt 412 = ~230
+/ tokens, and assembling it costs under 0.02ms. The seed corpus is NOT in the
+/ payload -- ai.top ranks over all of it and returns only the best few -- so
+/ growing the corpus does not grow the prompt. The bounds below exist to keep
+/ that true as a workspace grows, not to undo a bloat that was there.
+/ .
+/ ai.SMAX  most schemas named before the rest are counted rather than listed.
+/ ai.NEX   exemplars replayed. Ranked, so 3 good ones beat 4 mediocre ones.
+/ ai.MINQ  below this length a query carries no keywords worth matching on:
+/          "2+2" retrieves by coincidence, so retrieve nothing.
+ai.SMAX:12
+ai.NEX:3
+ai.MINQ:10
+
+/ Compact schema for the MODEL. ai.ctx[] stays exactly as it was for
+/ `\ai status`, where a human wants the types, attributes and row counts; the
+/ model needs the names it must not invent, and pays per token for the rest.
+/   SCHEMAS: trades:(sym,time,px,sz); quotes:(sym,time,bid,ask,bsz,asz)
+ai.tcols:{[n;v]($n),":(",(","/$'!+unkey v),")"}
+ai.scol:{[n]v:. n;$[istable v;ai.tcols[n;v];($n),":",$@v]}
+ai.scol0:{ai.try[ai.scol;x;($x),":?"]}
+/ A function tells the model nothing it can query, and a session that has
+/ defined a few helpers would otherwise spend its whole schema budget listing
+/ them. Drop those, then order TABLES FIRST -- they are what a query names, and
+/ naming a column that does not exist is the failure mode this block prevents.
+/ Without the ordering, ai.SMAX truncates in whatever order the global table
+/ happens to be in, which can drop every table and keep a dozen scalars.
+ai.isfn:{ai.try[{`o~@(. x)};x;0]}
+ai.istbl:{ai.try[{istable(. x)};x;0]}
+ai.srank:{$[ai.istbl x;0;1]}
+ai.sch:{u:ai.user[]
+  u:u@&~ai.isfn'u
+  $[0=#u;:"";0]
+  u:u@iasc(ai.srank'u)
+  m:$[ai.SMAX<#u;ai.SMAX#u;u]
+  h:"SCHEMAS: ",("; "/ai.scol0'm)
+  $[ai.SMAX<#u;h,"; (+",($(#u)-ai.SMAX)," more)";h]}
+
+ai.exs:{[q]$[ai.MINQ>#q;();ai.top[q;ai.NEX;ai.RK]]}
+ai.parts:{[task;q](ai.blk["Schema";ai.sch[]];ai.blk["Examples";ai.exs q];ai.blk["Task";task];ai.blk["Input";q])}
 ai.prompt:{[task;q]"\n"/,/ai.parts[task;q]}
 
 / Records stay one short line: they are replayed as few-shot examples AND

@@ -82,6 +82,13 @@ static int  g_on     = 1;   /* AI agent master switch: DEFAULT ON            */
 static int  g_tab_on = 1;   /* AI Tab completion:      DEFAULT ON            */
 static int  g_qa_ms  = 10000;  /* answer budget, ms -- see am_net_init */
 static int  g_tab_ms = 100;
+/* Generation bounds. Absent from the payload until now, which is what made a
+ * local model feel slow: with no num_predict the server generates until it
+ * decides to stop, and with no num_ctx it allocates its default KV cache
+ * (2048+) however short the prompt actually is. Neither is a property of the
+ * prompt, so no amount of prompt trimming could reach them. */
+static int  g_num_ctx     = 512;
+static int  g_num_predict = 128;
 static int  g_last_ms;
 static long long g_dead_until;   /* circuit breaker deadline (ms)            */
 
@@ -132,6 +139,12 @@ void am_net_init(void) {
      * a genuinely slow or black-holed endpoint waits longer than before. */
     g_qa_ms  = env_int("AMBER_AI_TIMEOUT_MS", 10000, 10, 120000);
     g_tab_ms = env_int("AMBER_AI_TAB_MS",     100,  10, 5000);
+    /* 512 comfortably holds the ~230-token prompt this agent assembles plus
+     * the reply. Raise it for a big workspace or a chattier task -- a prompt
+     * longer than num_ctx is TRUNCATED by the server, and a truncated schema
+     * produces confidently wrong column names rather than an error. */
+    g_num_ctx     = env_int("AMBER_AI_NUM_CTX",     512, 128, 32768);
+    g_num_predict = env_int("AMBER_AI_NUM_PREDICT", 128,   1,  4096);
 }
 
 const char *am_net_url(void)   { am_net_init(); return g_url; }
@@ -644,7 +657,7 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
     char *body = NULL, *text;
     size_t blen = 0;
     int rc;
-    char num[64];
+    char num[96];   /* holds the longest options fragment below */
 
     if (out) *out = NULL;
     if (out_len) *out_len = 0;
@@ -665,13 +678,19 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
     if (buf_str(&req, "\",\"prompt\":\"") < 0) goto oom;
     if (json_escape(&req, user ? user : "") < 0) goto oom;
     if (buf_str(&req, "\",\"stream\":false,\"temperature\":0.1") < 0) goto oom;
-    if (max_tokens > 0) {
-        sprintf(num, ",\"max_tokens\":%d,\"n_predict\":%d", max_tokens, max_tokens);
+    /* Bound generation ALWAYS, not only when a caller named a token count.
+     * Every \\ai command passes max_tokens = 0, so this used to emit a bare
+     * {"temperature":0.1} and the server was free to run on. num_ctx is sent
+     * for the same reason in reverse: the prompt is short, so say so, and the
+     * backend stops sizing its KV cache for a context that never arrives.
+     * The three spellings cover the three server families named above. */
+    {
+        int np = max_tokens > 0 ? max_tokens : g_num_predict;
+        sprintf(num, ",\"max_tokens\":%d,\"n_predict\":%d", np, np);
         if (buf_str(&req, num) < 0) goto oom;
-        sprintf(num, ",\"options\":{\"temperature\":0.1,\"num_predict\":%d}", max_tokens);
+        sprintf(num, ",\"options\":{\"temperature\":0.1,\"num_ctx\":%d,\"num_predict\":%d}",
+                g_num_ctx, np);
         if (buf_str(&req, num) < 0) goto oom;
-    } else {
-        if (buf_str(&req, ",\"options\":{\"temperature\":0.1}") < 0) goto oom;
     }
     if (buf_str(&req, "}") < 0) goto oom;
 
