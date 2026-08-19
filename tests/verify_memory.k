@@ -45,3 +45,35 @@ SHOW:{{`0:"  FAIL  ",(x 1),"   (",(x 2),")"}'x;}
 SHOW bad
 `0:$[0=#bad;"ALL SEED EXAMPLES RUN CLEANLY";"SOME SEED EXAMPLES FAILED"]
 `0:"====================================================="
+
+/ ---- the contrastive pairs in lib/ai.k must both be TRUE --------------------
+/ Each says "NOT this, USE that". If the wrong side actually works, or the right
+/ side does not, the agent is teaching a superstition -- which is exactly how
+/ "// is not an Amber comment" and "avg(px) is ANSI" nearly shipped: both are
+/ fine here, and only running them showed it. So run them.
+`0:""
+t:trades
+/ ai.k expects the REPL around it (repl.cols, dir, the ext hooks); loading it
+/ bare is fine because every one of those goes through ai.try, but the misses
+/ are noisy. Silence them: what is under test here is ai.CX, not the boot.
+/ WHOLE-FILE, not line-by-line. LOAD evaluates one line at a time, which is
+/ right for the corpus (one ai.seed per line) and wrong for ai.k: its
+/ multi-line lambda bodies then get evaluated as standalone statements, and
+/ loading the agent actually RAN \\ai status and \\ai warm.
+QUIET:{p:`diag 0;.[{. `c$1:x};,x;0];`diag p;}
+QUIET AM,"/lib/ai.k"
+CXB:()
+CXG:()
+chkg:{[r]$[`FAIL~.[{. qrw x};,r 2;`FAIL];CXG::CXG,,r;0];}
+chkb:{[r]$[(1=r 3)&~`FAIL~.[{. qrw x};,r 1;`FAIL];CXB::CXB,,r;0];}
+/ the wrong sides are SUPPOSED to raise, so silence the rich diagnostic
+CHK:{p:`diag 0;chkg'x;chkb'x;`diag p;}
+CHK ai.CX
+`0:"============== AMBER vs kdb+/SQL CONTRASTS =============="
+`0:($#ai.CX)," tests run, ",($(#CXG)+#CXB)," failures"
+SHOWG:{{`0:"  right side does NOT run : ",x 2}'x;}
+SHOWB:{{`0:"  wrong side DOES run     : ",x 1}'x;}
+SHOWG CXG
+SHOWB CXB
+`0:$[0=(#CXG)+#CXB;"EVERY CONTRAST HOLDS BOTH WAYS";"SOME CONTRASTS ARE WRONG"]
+`0:"========================================================"

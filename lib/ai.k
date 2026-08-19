@@ -179,7 +179,7 @@ ai.learnschema:{{ai.add["s";ai.ndesc0 x;$x]}'ai.user[];#ai.M}
 / ============================================================================
 / 3. PROMPTING
 / ============================================================================
-ai.SYS:"Amber is a columnar time-series engine. Its language is a K/q dialect, NOT ANSI SQL.\nRULE 1: Output RAW executable code ONLY. No markdown fences, no prose.\nRULE 2: ALWAYS native Amber vector SQL -- select avg px by sym from trades. NEVER ANSI SQL: no avg(px), no GROUP BY, no AS, no quoted names.\nRULE 3: For a math or scalar question return ONLY the expression -- 2+2 gives 2+2. NEVER wrap a non-table question in select ... from.\nUse only names given in SCHEMAS."
+ai.SYS:"Amber is a columnar time-series engine. Its language is a K/q dialect, NOT ANSI SQL.\nRULE 1: Output RAW executable code ONLY. No markdown fences, no prose.\nRULE 2: ALWAYS native Amber vector SQL -- select avg px by sym from trades. NEVER ANSI SQL: no GROUP BY, no AS alias, no quoted names, no function-call joins.\nRULE 3: For a math or scalar question return ONLY the expression -- 2+2 gives 2+2. NEVER wrap a non-table question in select ... from.\nUse only names given in SCHEMAS."
 
 / Kinds worth replaying as few-shot examples: q lines that ran cleanly,
 / a accepted Tab suggestions, p questions previously asked.
@@ -255,8 +255,45 @@ ai.exs:{[q]
 / three select-from examples will wrap "2+2" in a select whatever RULE 3 says.
 / The cheapest way to stop it inventing a query is to give it nothing to invent
 / one from.
+/ ---- contrastive grounding: Amber is NOT kdb+/q and NOT ANSI SQL -----------
+/ The model has seen millions of lines of kdb+ and SQL and approximately zero
+/ lines of Amber, so it reaches for the wrong dialect under any uncertainty. A
+/ positive example does not suppress that: it has to be told what NOT to write,
+/ next to what to write instead. A handful of these is worth more per token than
+/ another dozen exemplars, because each one kills a specific wrong prior.
+/ .
+/ Each entry is (trigger;wrong;right). An empty trigger means always send it;
+/ otherwise it only appears when the question mentions one of those words, so a
+/ question about buckets does not pay for the casting rule. ai.CXMAX caps it.
+/ .
+/ EVERY pair here was executed against a live workspace before being written
+/ down: the "right" side runs, and the "wrong" side genuinely fails. Things that
+/ merely LOOK wrong were dropped -- "// comment" is a valid Amber comment, since
+/ / opens one, and "avg(px)" parses fine inside a select because (px) is just a
+/ parenthesised px. Listing those would have taught a superstition.
+/ tests/verify_memory.k re-runs both sides of every pair.
+ai.CXMAX:4
+ai.CX:()
+ai.cxadd:{[t;b;g;w]ai.CX::ai.CX,,(t;b;g;w);}
+ai.cxadd["";"select avg px from t group by sym";"select avg px by sym from t";1]
+ai.cxadd["";"select avg px as mean from t";"select mean:avg px from t";1]
+ai.cxadd["filter among membership symbols oneof";"select from t where sym in `AAPL`MSFT";"select from t where in[sym;`AAPL`MSFT]";1]
+ai.cxadd["bucket buckets bar bars xbar minute minutes hour hours interval ohlc candle";"select avg px by 300 xbar time from t";"bars:update tb:xbar[300;time] from t";0]
+ai.cxadd["attr attribute sorted parted grouped index faster lookup optimise optimize";"`s#t`sym";"sortcol[`sym;t]";1]
+ai.cxadd["moving rolling window mavg msum mdev";"3 mavg t`px";"mavg[3;t`px]";1]
+ai.cxadd["between range within";"select from t where px within (95;105)";"select from t where (px>95)&px<105";1]
+ai.cxadd["vwap twap weighted";"vwap[t`sz;t`px]";"vwap t";1]
+ai.cxadd["top limit head preview sample";"select from t where i<10";"10#t";1]
+ai.cxadd["cast convert type float int";"`F$t`sz";"`f$t`sz";1]
+
+ai.cxhit:{[w;r]$[0=#r 0;1;ai.anyw[w;" "\r 0]]}
+ai.cxline:{[r]"NOT  ",(r 1),"  ->  ",r 2}
+ai.contra:{[q]w:ai.words q
+  m:ai.CX@&ai.cxhit[w]'ai.CX
+  ai.cxline'$[ai.CXMAX<#m;ai.CXMAX#m;m]}
+
 ai.parts:{[task;q]d:ai.dbq q
-  ($[d;ai.blk["Schema";ai.sch[]];()];ai.blk["Examples";ai.exs q];ai.blk["Task";task];ai.blk["Input";q])}
+  ($[d;ai.blk["Schema";ai.sch[]];()];$[d;ai.blk["Amber, not kdb+/SQL";ai.contra q];()];ai.blk["Examples";ai.exs q];ai.blk["Task";task];ai.blk["Input";q])}
 ai.prompt:{[task;q]"\n"/,/ai.parts[task;q]}
 
 / Records stay one short line: they are replayed as few-shot examples AND

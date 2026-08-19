@@ -142,8 +142,14 @@ echo "$out" | grep -q '0 failures'; res $? "tests/test_ai.k"
 say "tests/verify_memory.k (shipped few-shot corpus)"
 cp tests/verify_memory.k "$WORK/amber/tests/verify_memory.k"
 out=$( cd "$WORK/amber" && ./amber tests/verify_memory.k 2>&1 )
-echo "$out" | tail -3
-echo "$out" | grep -q '0 failures'; res $? "tests/verify_memory.k"
+echo "$out" | grep -E 'tests run|CLEANLY|BOTH WAYS|FAILED|WRONG'
+# This file reports TWO sections now, so "grep 0 failures" is not a gate: it
+# would pass on the corpus alone while every contrast was broken. Require both
+# success banners.
+ok=0
+echo "$out" | grep -q 'ALL SEED EXAMPLES RUN CLEANLY' || ok=1
+echo "$out" | grep -q 'EVERY CONTRAST HOLDS BOTH WAYS' || ok=1
+res $ok "tests/verify_memory.k"
 
 # ------------------------------------------------------------- 5. end to end
 say "tests/test_e2e.py (real REPL + mock backend)"

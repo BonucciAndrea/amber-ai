@@ -251,6 +251,22 @@ t[`boxBlobBorderCloses; 1=#?ai.dw'"\n"\ai.box BLOB;1]
 /x One default for every command truncated \ai profile mid-identifier.
 t[`profileGetsMostTokens;(ai.NP[]>ai.NW[])&ai.NW[]>ai.NQ[];1]
 t[`warmSizesForLongest; ai.nmax[];ai.NP[]]
+/x ---- contrastive grounding ------------------------------------------------
+/x The model has seen vast amounts of kdb+ and SQL and no Amber, so it needs to
+/x be told what NOT to write next to what to write. Both sides of every pair are
+/x executed by tests/verify_memory.k; these assert the SELECTION.
+t[`contraAlwaysSends;   1<#ai.contra"average price by symbol";1]
+t[`contraIsCapped;      ai.CXMAX<#ai.contra"bucket bars attr moving within vwap top cast";0]
+t[`contraTriggersXbar;  has["\n"/ai.contra"average px in 5 minute buckets";"xbar"];1]
+t[`contraTriggersAttr;  has["\n"/ai.contra"make symbol lookups faster with an attribute";"sortcol"];1]
+t[`contraTriggersCast;  has["\n"/ai.contra"cast sz to float";"`f$"];1]
+/x English words must not trigger: "average px IN 5 minute buckets" is not a
+/x membership question, and "select last px" is not a row limit.
+t[`contraNoPrepositionHit;has["\n"/ai.contra"average px in 5 minute buckets";"in[sym"];0]
+t[`contraNoLastHit;     has["\n"/ai.contra"select last px by sym";"10#t"];0]
+/x a non-data question gets no schema, no examples and no contrasts
+t[`contraOffForMath;    has[ai.prompt["T";"2+2"];"not kdb"];0]
+t[`contraOnForData;     has[ai.prompt["T";"average price by symbol"];"not kdb"];1]
 /x the documented speed knob must still move all of them
 t[`budgetsTrackNumPredict;ai.NP[]>ai.np[];1]
 /x ---- keeping the model resident -----------------------------------------
@@ -339,6 +355,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[167]
+hexpect[176]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]
