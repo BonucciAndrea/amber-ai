@@ -42,7 +42,26 @@ jobs:
           python-version: '3.12'
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential clang
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # A GitHub runner's apt can stall for a whole job rather than fail: a
+          # package that opens a debconf prompt waits for a tty that is not
+          # there, and an apt mirror reached over IPv6 that blackholes gives no
+          # error at all, just a hang. Every knob below turns one of those silent
+          # waits into a bounded, reported error:
+          #   DEBIAN_FRONTEND  no interactive prompt can ever be raised
+          #   -o Acquire::Retries       retry a dropped mirror instead of stalling
+          #   -o Acquire::http::Timeout cap each request (seconds)
+          #   ForceIPv4        skip the IPv6 mirror path that blackholes on Azure
+          #   --no-install-recommends   fewer packages, fewer prompts, less time
+          #   timeout NNN      a hard ceiling, so a hang FAILS instead of hanging
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo timeout 300 apt-get update -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 -o Acquire::ForceIPv4=true
+          sudo timeout 600 apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::ForceIPv4=true build-essential clang
       - name: Build + run tests/test_net.c
         env:
           CC: ${{ matrix.cc }}
@@ -63,6 +82,19 @@ jobs:
     name: ${{ matrix.os }} / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    env:
+      # Python must not buffer: the mock backend runs in the background with its
+      # output redirected, so a buffered traceback dies with the process and the
+      # step can only report the symptom.
+      PYTHONUNBUFFERED: "1"
+      # A generous ANSWER budget for the test run only. The compiled default is
+      # 10s (src/net.c); a macos-latest runner under CPU contention was missing
+      # even the old 2s one, and test_e2e.py's ai_answer, ai_why_sees_the_error
+      # and response_shapes failed with "the model backend did not answer in
+      # time" against a mock that had in fact replied. This is a deadline, not a
+      # sleep -- the mock answers in milliseconds, so raising the ceiling costs
+      # nothing on a fast runner and removes the false positive on a slow one.
+      AMBER_AI_TIMEOUT_MS: "30000"
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +128,26 @@ jobs:
 
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential clang rlwrap
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # A GitHub runner's apt can stall for a whole job rather than fail: a
+          # package that opens a debconf prompt waits for a tty that is not
+          # there, and an apt mirror reached over IPv6 that blackholes gives no
+          # error at all, just a hang. Every knob below turns one of those silent
+          # waits into a bounded, reported error:
+          #   DEBIAN_FRONTEND  no interactive prompt can ever be raised
+          #   -o Acquire::Retries       retry a dropped mirror instead of stalling
+          #   -o Acquire::http::Timeout cap each request (seconds)
+          #   ForceIPv4        skip the IPv6 mirror path that blackholes on Azure
+          #   --no-install-recommends   fewer packages, fewer prompts, less time
+          #   timeout NNN      a hard ceiling, so a hang FAILS instead of hanging
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo timeout 300 apt-get update -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 -o Acquire::ForceIPv4=true
+          sudo timeout 600 apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::ForceIPv4=true build-essential clang rlwrap
 
       - name: Install build tools (macOS)
         if: runner.os == 'macOS'
@@ -211,7 +262,27 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # A GitHub runner's apt can stall for a whole job rather than fail: a
+          # package that opens a debconf prompt waits for a tty that is not
+          # there, and an apt mirror reached over IPv6 that blackholes gives no
+          # error at all, just a hang. Every knob below turns one of those silent
+          # waits into a bounded, reported error:
+          #   DEBIAN_FRONTEND  no interactive prompt can ever be raised
+          #   -o Acquire::Retries       retry a dropped mirror instead of stalling
+          #   -o Acquire::http::Timeout cap each request (seconds)
+          #   ForceIPv4        skip the IPv6 mirror path that blackholes on Azure
+          #   --no-install-recommends   fewer packages, fewer prompts, less time
+          #   timeout NNN      a hard ceiling, so a hang FAILS instead of hanging
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo timeout 300 apt-get update -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 -o Acquire::ForceIPv4=true
+          sudo timeout 600 apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::ForceIPv4=true shellcheck
 
       - name: Executable bits are committed
         # ./install.sh is the FIRST command in the README. A clone whose scripts

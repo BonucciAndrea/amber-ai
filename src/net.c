@@ -28,7 +28,7 @@
 void am_net_init(void) {}
 const char *am_net_url(void)   { return "http://127.0.0.1:11434/api/generate"; }
 const char *am_net_model(void) { return "qwen2.5-coder:0.5b"; }
-int  am_net_qa_ms(void)  { return 2000; }
+int  am_net_qa_ms(void)  { return 10000; }
 int  am_net_tab_ms(void) { return 100; }
 int  am_net_on(void)     { return 0; }
 int  am_net_tab_on(void) { return 0; }
@@ -80,7 +80,7 @@ static char g_url[AM_URL_MAX]     = "http://127.0.0.1:11434/api/generate";
 static char g_model[AM_MODEL_MAX] = "qwen2.5-coder:0.5b";
 static int  g_on     = 1;   /* AI agent master switch: DEFAULT ON            */
 static int  g_tab_on = 1;   /* AI Tab completion:      DEFAULT ON            */
-static int  g_qa_ms  = 2000;
+static int  g_qa_ms  = 10000;  /* answer budget, ms -- see am_net_init */
 static int  g_tab_ms = 100;
 static int  g_last_ms;
 static long long g_dead_until;   /* circuit breaker deadline (ms)            */
@@ -118,7 +118,19 @@ void am_net_init(void) {
     copy_env("AMBER_AI_MODEL", g_model, sizeof g_model);
     g_on     = env_int("AMBER_AI",            1, 0, 1);
     g_tab_on = env_int("AMBER_AI_TAB",        1, 0, 1);
-    g_qa_ms  = env_int("AMBER_AI_TIMEOUT_MS", 2000, 10, 120000);
+    /* 10s, raised from 2s. Two reasons, one of them a CI failure:
+     *   * a local model on a laptop CPU regularly needs more than 2s for a
+     *     first token, so the documented alias in README.md/INSTALL.md already
+     *     had to override this with AMBER_AI_TIMEOUT_MS=10000 -- the default
+     *     was wrong often enough that the docs routed around it.
+     *   * on a contended macos-latest runner the 2s budget expired before the
+     *     mock backend answered, and test_e2e.py's ai_answer,
+     *     ai_why_sees_the_error and response_shapes failed with
+     *     "the model backend did not answer in time".
+     * This is a DEADLINE, not a sleep: a backend that answers in 200ms still
+     * costs 200ms, and a dead port still fails instantly on ECONNREFUSED. Only
+     * a genuinely slow or black-holed endpoint waits longer than before. */
+    g_qa_ms  = env_int("AMBER_AI_TIMEOUT_MS", 10000, 10, 120000);
     g_tab_ms = env_int("AMBER_AI_TAB_MS",     100,  10, 5000);
 }
 

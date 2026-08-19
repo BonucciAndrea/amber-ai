@@ -62,6 +62,7 @@ already contains the AI alias:
 ```sh
 # === Amber - native engine configuration ===================================
 export AMBER_HOME="$HOME/amber"          # the checkout itself; there is no bin/
+export PATH="$AMBER_HOME:$PATH"          # $AMBER_HOME itself, NOT $AMBER_HOME/bin
 
 alias amber='AMBER_NATIVE=1 "$AMBER_HOME/a"'
 alias amberx='"$AMBER_HOME/amber"'       # bare interpreter, for scripts and pipes

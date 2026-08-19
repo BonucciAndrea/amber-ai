@@ -106,6 +106,22 @@ ai.add:{[k;s;c]
 ai.clearf:{(ai.memf[])1:"/ Amber AI persistent memory -- cleared\n"}
 ai.forget:{ai.M::();ai.try[ai.clearf;0;0];ai.DIRTY::0;1}
 
+/ ---- the shipped seed corpus (read-only) ----------------------------------
+/ lib/amber_ai_memory.k holds a few hundred verified Amber expressions so that a
+/ FIRST session already has good few-shot examples. It is loaded into ai.SEED,
+/ NOT into ai.M, and the separation is the whole point: \ai forget clears what
+/ you taught it and leaves the corpus; ai.save never writes the corpus back into
+/ your personal memory file; and ai.MAX trimming can only ever evict your own
+/ records. repl.k's `dir` is the Amber root, which is where install.sh puts it.
+ai.SEED:()
+ai.SEEDF:""
+ai.seed:{[k;s;c]ai.SEED::ai.SEED,,(k;0;1;s;c);}
+ai.seedf:{$[0<#ai.SEEDF;ai.SEEDF;ai.env[`$"AMBER_AI_SEED";ai.try[{dir,"/lib/amber_ai_memory.k"};0;""]]]}
+ai.loadseed:{ai.SEED::()
+  $[0=#f:ai.seedf[];:0;0]
+  ai.try[{{.[{. x};,x;{}]}'0:x};f;0]
+  #ai.SEED}
+
 / ---- relevance ranking (the retrieval half of the loop) -------------------
 ai.norm:{lower ssr[ssr[ssr[ssr[x;",";" "];"(";" "];")";" "];";";" "]}
 ai.words:{w@&0<#'w:" "\ai.norm x}
@@ -118,8 +134,9 @@ ai.cv:{$[`c~@x;,x;x]}
 ai.kmatch:{[ks;r]k:ai.cv ks;$[0=#k;1;in[*ai.cv r 0;k]]}
 ai.score:{[qw;r](+/in[ai.words[r 3];qw])+0.5*r 2}
 ai.top:{[q;n;k]
-  $[0=#ai.M;:();0]
-  m:ai.M@&ai.kmatch[k]'ai.M
+  a:ai.M,ai.SEED
+  $[0=#a;:();0]
+  m:a@&ai.kmatch[k]'a
   $[0=#m;:();0]
   s:ai.score[ai.words q]'m
   {x 3}'m@(n&#m)#idesc s}
@@ -164,7 +181,65 @@ ai.prompt:{[task;q]"\n"/,/ai.parts[task;q]}
 / offered as Tab candidates, so a whole profile report has no business in one.
 ai.short:{s:*"\n"\x;$[200<#s;200#s;s]}
 ai.nl:{$[0=#x;"\n";$["\n"~*|x;"";"\n"]]}
-ai.emit:{ai.o[x,ai.nl x];}
+
+/ ============================================================================
+/ 3b. RESPONSE SANITISER  +  BOXED RENDERING
+/ ============================================================================
+/ A local instruct model has been trained on chat markdown, so it wraps code in
+/ ```fences``` and hangs a prose comment off the end of the line no matter how
+/ firmly the system prompt asks for bare code. Both are noise here: the whole
+/ point of this agent is that the answer can be retyped -- or Tab-accepted --
+/ straight into the REPL. So the reply is cleaned first and framed second.
+/ .
+/ What is deliberately NOT stripped: a lone backtick. In this dialect a backtick
+/ OPENS A SYMBOL LITERAL -- `sym, `trades, `s# -- so removing backticks would
+/ quietly corrupt the very code this is meant to hand back. Only ``` fences go.
+
+/ display width, not byte count. A UTF-8 continuation byte (10xxxxxx) is part of
+/ the previous character and occupies no column; with -fsigned-char those bytes
+/ are exactly the ints below -64. Without this every box containing a non-ASCII
+/ character comes out ragged, because #"─" is 3, not 1.
+ai.dw:{+/~(`i$x)<-64}
+ai.rep:{[s;n]$[0<n;`c$,/n#,s;""]}
+
+/ ---- sanitiser -------------------------------------------------------------
+ai.isfence:{$[3>#t:trim x;0;"```"~3#t]}
+ai.defence:{$[0=#x;x;x@&~ai.isfence'x]}
+
+/ Strip a trailing ` / comment`, but only where the language itself would treat
+/ it as one: after whitespace and OUTSIDE a string literal. Tracking quote parity
+/ is what stops `select from t where s like "a / b"` losing half its predicate.
+ai.uncomment:{[l]
+  $[2>#l;:l;0]
+  c:"\""=l
+  b:(2!+\c)-c                       / quote parity BEFORE each position
+  n:1_l,," "                        / the next character, aligned
+  i:&(0=b)&(" "=l)&"/"=n
+  $[0=#i;l;rtrim(*i)#l]}
+
+ai.clean:{[t]
+  ls:ai.defence("\n"\(ai.cv t))
+  ls:ai.uncomment'ls
+  ls:$[0=#ls;ls;ls@&|\0<#'ls]       / drop LEADING blank lines only
+  $[0=#ls;"";"\n"/ls]}
+
+/ ---- boxed rendering -------------------------------------------------------
+/ ai.BOX 0 turns this off for anyone piping the REPL into another program; the
+/ frame is for humans, and \ai box off is one command away.
+ai.BOX:1
+ai.BX:("┌";"┐";"└";"┘";"─";"│")
+ai.trail:{$[0=#x;x;$[|/0<#'x;x@!1+|/&0<#'x;0#x]]}
+ai.bxrow:{[w;l](ai.BX 5)," ",l,(ai.rep[" ";w-ai.dw l])," ",ai.BX 5}
+ai.box:{[t]
+  ls:ai.trail("\n"\(ai.cv t))
+  $[0=#ls;:t;0]
+  w:|/ai.dw'ls
+  h:ai.rep[ai.BX 4;w+2]
+  "\n"/((,(ai.BX 0),h,ai.BX 1),ai.bxrow[w]'ls),,(ai.BX 2),h,ai.BX 3}
+
+/ Every model-generated response funnels through here: \ai, \ai why, \ai explain,
+/ \ai profile and \ai optimize all end in ai.emit.
+ai.emit:{t:ai.clean x;$[ai.BOX;t:ai.box t;0];ai.o[t,ai.nl t];}
 
 ai.ask:{[task;q;k;tmo;mx]
   $[ai.ison[];;[ai.say"ai: the agent is switched off. Turn it back on with:  \\ai on";:0]]
@@ -219,7 +294,7 @@ ai.diag:{s:ai.st[]
   ai.say"    endpoint : ",s 2
   ai.say"    model    : ",s 3
   $[3=x 0;ai.hintConn[];0]
-  $[4=x 0;ai.say"    raise the budget with:  \\ai timeout 5000";0]
+  $[4=x 0;ai.say"    raise the budget with:  \\ai timeout 30000";0]
   0}
 
 / ============================================================================
@@ -281,12 +356,14 @@ ai.status:{s:ai.st[]
   ai.say"  endpoint   : ",s 2
   ai.say"  model      : ",s 3
   ai.say"  budgets    : ",($s 4),"ms answer, ",($s 5),"ms tab   (last call ",($s 6),"ms)"
+  ai.say"  boxed out  : ",$[ai.BOX;"on";"off"]
   ai.say"  memory     : ",($#ai.M),ai.plural[#ai.M;" record"]," in ",ai.memf[]
+  ai.say"  seed corpus: ",($#ai.SEED),ai.plural[#ai.SEED;" example"],$[0=#ai.SEED;" (lib/amber_ai_memory.k not found)";" shipped"]
   ai.say"  workspace  : ",ai.ctx[]
   1}
 
 ai.mrow:{ai.say"  ",(2$x 0)," hits ",(4$$x 2),"  ",70$ssr[x 3;"\n";" "]}
-ai.memshow:{ai.say"memory: ",($#ai.M),ai.plural[#ai.M;" record"]," in ",ai.memf[]
+ai.memshow:{ai.say"memory: ",($#ai.M),ai.plural[#ai.M;" record"]," in ",ai.memf[],"  +",($#ai.SEED)," shipped example",$[1=#ai.SEED;"";"s"]
   $[0=#ai.M;:1;0]
   ai.mrow'(10&#ai.M)#|ai.M
   1}
@@ -307,6 +384,7 @@ ai.hl""
 ai.hl"  \\ai on | off          master switch (default ON)"
 ai.hl"  \\ai tab on | tab off  inline Tab suggestions (default ON)"
 ai.hl"  \\ai status            endpoint, model, budgets, memory, workspace"
+ai.hl"  \\ai box [on|off]      frame answers in a box (off when piping output)"
 ai.hl"  \\ai memory            what the agent has learned so far"
 ai.hl"  \\ai learn             record the current schema into memory"
 ai.hl"  \\ai forget            erase the persistent memory file"
@@ -345,13 +423,17 @@ ai.c.status:{x;ai.status[]}
 ai.c.on:{x;`aio[1];ai.say"ai: agent on";1}
 ai.c.off:{x;`aio[0];ai.say"ai: agent off";1}
 ai.c.retry:{x;`aio[4];ai.say"ai: the endpoint will be retried on the next call";1}
+ai.c.box:{a:trim x
+  $[0=#a;;ai.BOX::~"off"~lower a]
+  ai.say"ai: boxed output ",$[ai.BOX;"on";"off"]
+  1}
 ai.c.memory:{x;ai.memshow[]}
 ai.c.forget:{x;ai.forget[];ai.say"ai: memory cleared";1}
 ai.c.learn:{x;ai.dolearn[]}
 ai.c.serve:{x;ai.doserve[]}
 
-ai.K:`help`status`on`off`retry`serve`tab`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
-ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.tab;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
+ai.K:`help`status`on`off`retry`serve`tab`box`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
+ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.tab;ai.c.box;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
 ai.D:ai.K!ai.V
 
 / \ai <rest of line>.  Anything that is not a known sub-command is a question.
@@ -381,6 +463,7 @@ ext.tag:{x;$[ai.ison[];"";" (agent off)"]}
 / ---- boot -----------------------------------------------------------------
 ai.BASE::ai.globals[]
 ai.try[ai.load;0;0];
+ai.try[ai.loadseed;0;0];
 / ai.BASE is the "everything that was already here" snapshot that ai.ctx[]
 / subtracts, so it MUST be taken after the ext.* hooks above are defined --
 / otherwise the agent would describe its own plumbing to the model as if it

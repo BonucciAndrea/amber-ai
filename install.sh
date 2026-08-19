@@ -250,6 +250,17 @@ step "installing the agent library into $AMBER/lib/"
 mkdir -p "$AMBER/lib" || die "cannot create $AMBER/lib"
 cp -f "$HERE/lib/ai.k" "$AMBER/lib/ai.k" || die "cannot write $AMBER/lib/ai.k"
 ok "lib/ai.k"
+# The shipped few-shot corpus. Read-only at run time and kept apart from the
+# user's own ~/.amber_ai_memory.k, so `\ai forget` never destroys it and it is
+# never written back into personal memory. Absent = the agent simply starts with
+# no examples, so this is not fatal.
+if [ -f "$HERE/lib/amber_ai_memory.k" ]; then
+  cp -f "$HERE/lib/amber_ai_memory.k" "$AMBER/lib/amber_ai_memory.k" \
+    || die "cannot write $AMBER/lib/amber_ai_memory.k"
+  ok "lib/amber_ai_memory.k ($(grep -c '^ai.seed\[' "$HERE/lib/amber_ai_memory.k") examples)"
+else
+  warn "lib/amber_ai_memory.k is missing -- the agent will start with no seed examples"
+fi
 
 # repl.k loads lib/ext.k whole-file at startup (trapped, diagnostics off) and
 # nothing else. Registering means appending one trapped loader line -- appending,

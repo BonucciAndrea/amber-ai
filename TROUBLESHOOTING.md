@@ -383,7 +383,7 @@ Per-project settings work well in a shell rc or a `direnv` file:
 export AMBER_AI_URL=http://127.0.0.1:11500/api/generate
 export AMBER_AI_MODEL=qwen2.5-coder:7b
 export AMBER_AI_MEMORY=$PWD/.amber_ai_memory.k     # a memory scoped to this project
-export AMBER_AI_TIMEOUT_MS=6000
+export AMBER_AI_TIMEOUT_MS=30000                   # a big 7b model on CPU can need this
 ```
 
 ---

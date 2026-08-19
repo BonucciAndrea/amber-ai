@@ -27,6 +27,7 @@ output, and --slow lets a test drive the deadline path in src/net.c.
 amber-ai - GNU AGPLv3 - see LICENSE and NOTICE.
 """
 import json
+import socket
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -111,6 +112,12 @@ def main():
         else:
             port = int(a)
         i += 1
+    # Bind IPv4 loopback EXPLICITLY. http.server's default address_family is
+    # already AF_INET, but stating it makes the guarantee local instead of
+    # inherited: the client side (src/net.c getaddrinfo) is handed the literal
+    # "127.0.0.1", and on Darwin a host that resolved to ::1 while the server sat
+    # on 127.0.0.1 would connect to nothing and look exactly like a slow model.
+    ThreadingHTTPServer.address_family = socket.AF_INET
     # A CI runner that reuses a machine can leave the previous run's socket in
     # TIME_WAIT on this fixed port; without SO_REUSEADDR the bind then fails and
     # the only symptom the workflow could observe was "never came up".

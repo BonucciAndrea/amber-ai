@@ -10,7 +10,7 @@
  *      the whole recv() loop.  The socket is non-blocking throughout and every
  *      wait goes through poll(2) with the remaining budget, so a hung or
  *      half-open backend costs exactly the budget and not one millisecond
- *      more.  Q&A uses AMBER_AI_TIMEOUT_MS (default 2000); Tab completion uses
+ *      more.  Q&A uses AMBER_AI_TIMEOUT_MS (default 10000); Tab completion uses
  *      AMBER_AI_TAB_MS (default 100, and may be driven below 50 for a
  *      genuinely invisible keystroke cost).
  *
@@ -51,7 +51,7 @@
 /* AMBER_AI_MODEL        default qwen2.5-coder:0.5b                           */
 /* AMBER_AI              0 disables the whole agent (default 1 = ON)          */
 /* AMBER_AI_TAB          0 disables AI Tab completion only (default 1 = ON)   */
-/* AMBER_AI_TIMEOUT_MS   default 2000                                          */
+/* AMBER_AI_TIMEOUT_MS   default 10000                                         */
 /* AMBER_AI_TAB_MS       default 100                                           */
 void        am_net_init(void);              /* idempotent                     */
 const char *am_net_url(void);

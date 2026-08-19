@@ -105,7 +105,7 @@ mkdir -p "$WORK/amber"
   | ( cd "$WORK/amber" && tar xf - ) || { echo "  -> FAIL (copy)"; exit 1; }
 # start from a stock tree: drop anything a previous install left behind
 rm -f "$WORK/amber/ext/net.c" "$WORK/amber/ext/net.h" "$WORK/amber/ext/ai_ext.c" \
-      "$WORK/amber/lib/ai.k" "$WORK/amber/lib/ext.k"
+      "$WORK/amber/lib/ai.k" "$WORK/amber/lib/amber_ai_memory.k" "$WORK/amber/lib/ext.k"
 # `tar` faithfully reproduces the SOURCE tree's modes, so a stock `git clone` of
 # Amber whose ./a is 644 yields a copy whose ./a is 644 too. install.sh's own
 # verification pipes into "$AMBER/a" with stderr discarded, so the resulting
@@ -133,6 +133,17 @@ cp tests/test_ai.k "$WORK/amber/tests/test_ai.k"
 out=$( cd "$WORK/amber" && ./amber tests/test_ai.k 2>&1 )
 echo "$out" | tail -4
 echo "$out" | grep -q '0 failures'; res $? "tests/test_ai.k"
+
+# ------------------------------------------------- 4b. the shipped seed corpus
+# Every example in lib/amber_ai_memory.k is replayed to the model as a few-shot
+# example AND offered back as a Tab candidate, so one that no longer parses is
+# worse than none: it teaches a wrong idiom and completes the user into an
+# error. Run them all, through the same qsql.k rewriter the REPL uses.
+say "tests/verify_memory.k (shipped few-shot corpus)"
+cp tests/verify_memory.k "$WORK/amber/tests/verify_memory.k"
+out=$( cd "$WORK/amber" && ./amber tests/verify_memory.k 2>&1 )
+echo "$out" | tail -3
+echo "$out" | grep -q '0 failures'; res $? "tests/verify_memory.k"
 
 # ------------------------------------------------------------- 5. end to end
 say "tests/test_e2e.py (real REPL + mock backend)"

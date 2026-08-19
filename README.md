@@ -107,34 +107,49 @@ Without a backend the agent is a **no-op**: it says so once, and the REPL is exa
 let `amber/install.sh` write the whole block for you, which already includes this line:
 
 ```sh
-# amber-ai -> the full REPL with the local co-pilot pointed at your model server
-# and given a longer answer budget. lib/ai.k is loaded automatically by repl.k
-# via lib/ext.k, so it must NOT be passed as a script argument.
+# Where Amber lives. The launcher is $AMBER_HOME/a -- there is no bin/ directory
+# and no separate `amber` wrapper on PATH unless you make one.
+export AMBER_HOME="$HOME/amber"
+export PATH="$AMBER_HOME:$PATH"
+
+# amber -> the plain REPL. AMBER_THREADS sizes the peach worker pool; leave it
+# unset to let the engine pick, or pin it on a shared box.
+alias amber='AMBER_NATIVE=1 "$AMBER_HOME/a"'
+alias amberx='"$AMBER_HOME/amber"'       # bare interpreter, for scripts and pipes
+
+# amber-ai -> the full REPL with the local co-pilot pointed at your model server.
+# lib/ai.k is loaded automatically by repl.k via lib/ext.k, so it must NOT be
+# passed as a script argument. The 10000 ms budget is now the compiled-in
+# default too; it is repeated here so the alias is self-documenting.
 alias amber-ai='AMBER_NATIVE=1 AMBER_AI=1 AMBER_AI_URL="http://127.0.0.1:11434/api/generate" AMBER_AI_TIMEOUT_MS=10000 "$AMBER_HOME/a"'
 
 # Agent off for one session, without editing anything:
 alias amber-noai='AMBER_AI=0 "$AMBER_HOME/a"'
 ```
 
-Two things that look like they should work and do not:
+Three things that look like they should work and do not:
 
 * **Do not pass `lib/ai.k` as an argument.** `amber $AMBER_HOME/lib/ai.k` runs the agent library
   as a *script* and exits. `repl.k` already loads it through `lib/ext.k` at startup; the alias only
   has to start the REPL.
 * **Alias the launcher `a`, not the `amber` binary.** The bare binary has no stdlib and no
   `repl.k`, so `\ai` — which is dispatched by `repl.k` — does not exist there.
+* **There is no `$AMBER_HOME/bin/`.** Amber builds in place: the binary is `$AMBER_HOME/amber` and
+  the launcher beside it is `$AMBER_HOME/a`. Putting `$AMBER_HOME` itself on `PATH` is what makes
+  `a` runnable from anywhere. There is likewise no `AMBER_MEM_MB`; the heap is sized by the engine,
+  and the tunable that does exist is `AMBER_THREADS`.
 
-The default 2000 ms answer budget is often too tight for the *first* question after a cold start,
-because the backend is loading weights. Raise it in any of three scopes:
+The answer budget defaults to 10000 ms. The *first* question after a cold start can still exceed
+it while the backend loads weights, so raise it in any of three scopes:
 
 ```text
-amber> \ai timeout 10000            # this session
+amber> \ai timeout 30000            # this session
 ```
 ```sh
-export AMBER_AI_TIMEOUT_MS=10000     # every session (the alias above does this)
+export AMBER_AI_TIMEOUT_MS=30000     # every session (overrides the 10000 default)
 ```
 ```text
-amber> `aio[(2;10000)]               # programmatic; key 2 is the answer budget
+amber> `aio[(2;30000)]               # programmatic; key 2 is the answer budget
 ```
 
 Leave the **Tab** budget small (`AMBER_AI_TAB_MS`, default 100 ms): it runs on the keystroke path,
@@ -208,7 +223,7 @@ and deleting the file is always safe.
 | `AMBER_AI_TAB` | `1` | `0` disables model Tab suggestions only |
 | `AMBER_AI_URL` | `http://127.0.0.1:11434/api/generate` | the only address ever contacted |
 | `AMBER_AI_MODEL` | `qwen2.5-coder:0.5b` | any model your backend has |
-| `AMBER_AI_TIMEOUT_MS` | `2000` | answer budget |
+| `AMBER_AI_TIMEOUT_MS` | `10000` | answer budget |
 | `AMBER_AI_TAB_MS` | `100` | Tab budget; drop below 50 for an invisible keystroke cost |
 | `AMBER_AI_MEMORY` | `~/.amber_ai_memory.k` | where memory lives |
 

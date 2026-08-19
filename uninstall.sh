@@ -5,7 +5,7 @@
 #     ./uninstall.sh /path/to/amber
 #     ./uninstall.sh                  # same auto-detection as install.sh
 #
-# Removes ext/net.c, ext/net.h, ext/ai_ext.c and lib/ai.k, drops amber-ai's
+# Removes ext/net.c, ext/net.h, ext/ai_ext.c, lib/ai.k and lib/amber_ai_memory.k, drops amber-ai's
 # loader line from lib/ext.k, and rebuilds. Amber's build.sh prunes object files
 # whose source has gone, so the resulting binary is byte-for-byte a stock one.
 #
@@ -51,7 +51,7 @@ done
 [ -n "$AMBER" ] || { echo "error: could not find an Amber installation; pass the path" >&2; exit 1; }
 
 echo "==> removing amber-ai from $AMBER"
-for f in ext/net.c ext/net.h ext/ai_ext.c lib/ai.k; do
+for f in ext/net.c ext/net.h ext/ai_ext.c lib/ai.k lib/amber_ai_memory.k; do
   if [ -e "$AMBER/$f" ]; then rm -f "$AMBER/$f" && echo "    removed $f"; fi
 done
 
