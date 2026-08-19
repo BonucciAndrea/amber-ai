@@ -312,8 +312,39 @@ ai.BOX:1
 ai.BX:("┌";"┐";"└";"┘";"─";"│")
 ai.trail:{$[0=#x;x;$[|/0<#'x;x@!1+|/&0<#'x;0#x]]}
 ai.bxrow:{[w;l](ai.BX 5)," ",l,(ai.rep[" ";w-ai.dw l])," ",ai.BX 5}
+
+/ ---- wrapping --------------------------------------------------------------
+/ A line wider than the terminal wraps at the EDGE, not at the frame, so the
+/ right-hand border of the box lands in the middle of the next row and the whole
+/ thing looks broken. Wrap first, then measure: the box is only ever as wide as
+/ the widest line it is actually going to draw.
+/ .
+/ Widths are display COLUMNS throughout (ai.dw), never byte counts -- a box
+/ character is three bytes and one column, so byte arithmetic tears the frame on
+/ any non-ASCII content.
+/ repl.cols is the terminal width. NOT root `cols`, which is the stdlib verb for
+/ a table s column names -- reading that gives a function, and every width
+/ comparison downstream then fails on a type error.
+ai.BMAX:96
+ai.tw:{v:ai.try[{x;repl.cols};0;80];$[`i~@v;v;80]}
+ai.wrapw:{24|(ai.BMAX&ai.tw[])-4}
+/ cumulative display columns, one entry per byte
+ai.cw:{+\~(`i$x)<-64}
+/ longest byte-prefix of l that fits in w columns
+ai.fit:{[w;l]$[0=#l;0;+/~w<ai.cw l]}
+/ Greedy word wrap: break after the last space that fits, and hard-break a token
+/ with no space in it (a long path, a URL, a select with no room to breathe)
+/ rather than letting it overflow.
+ai.wrap1:{[w;l]
+  $[(0=#l)|~w<ai.dw l;:,l;0]
+  n:1|ai.fit[w;l]
+  sp:&" "=n#l
+  k:$[#sp;1+|/sp;n]
+  (,rtrim k#l),ai.wrap1[w;k _ l]}
+ai.wrap:{[w;ls],/ai.wrap1[w]'ls}
+
 ai.box:{[t]
-  ls:ai.trail("\n"\(ai.cv t))
+  ls:ai.wrap[ai.wrapw[];ai.trail("\n"\(ai.cv t))]
   $[0=#ls;:t;0]
   w:|/ai.dw'ls
   h:ai.rep[ai.BX 4;w+2]
@@ -388,12 +419,28 @@ ai.T.w:"Diagnose this Amber error against the session schema above. State the mo
 ai.T.f:"Given this profile of one table, recommend concrete vector-performance changes: which columns want `s `u `p or `g, which lookups then become O(1) or O(log n), what is worth pre-aggregating, and what to avoid. Be specific and short."
 ai.T.o:"Rewrite this Amber/K query to run faster on the schema above. Give the rewritten query first. Then list, in at most four bullets, the vector reasons: attribute flags that turn a scan into a binary search or an O(1) slice, redundant passes that fuse, joins that should be as-of (aj) or window (wj), and aggregations worth precomputing."
 
-ai.q:{ai.ask[ai.T.q;x;"p";ai.qams[];0]}
-ai.explain:{$[0=#x;[ai.say"usage: \\ai explain <expression>";:0];0];ai.ask[ai.T.e;x;"e";ai.qams[];0]}
+/ ---- per-task generation budgets -------------------------------------------
+/ Every command used to pass 0, so every answer got the ONE default (128
+/ tokens). That is about right for "give me the expression" and nowhere near
+/ enough for \ai profile, which is asked for a report and was being cut off
+/ mid-identifier -- the model had more to say and was stopped saying it.
+/ Sized per task rather than raised globally, because tokens are the dominant
+/ cost on a local model: a short answer should stay short and fast.
+/ Expressed as MULTIPLES of AMBER_AI_NUM_PREDICT (default 128) rather than as
+/ fixed numbers, so that knob still works. Hard-coding 192/256/448 here would
+/ have silently disabled it for every \ai command, since none of them passes 0
+/ any more -- the documented way to trade answer length for speed on a slow
+/ model would have quietly stopped doing anything.
+ai.NQ:{1|_1.5*ai.np[]}
+ai.NW:{1|_2.0*ai.np[]}
+ai.NP:{1|_3.5*ai.np[]}
+ai.nmax:{ai.NP[]}
+ai.q:{ai.ask[ai.T.q;x;"p";ai.qams[];ai.NQ[]]}
+ai.explain:{$[0=#x;[ai.say"usage: \\ai explain <expression>";:0];0];ai.ask[ai.T.e;x;"e";ai.qams[];ai.NQ[]]}
 
 ai.why:{e:$[0<#x;x;ai.ERR]
   $[0=#e;[ai.say"ai: no recent error to explain. Run the failing expression first, or use  \\ai why <error text>";:0];0]
-  ai.ask[ai.T.w;e;"w";ai.qams[];0]}
+  ai.ask[ai.T.w;e;"w";ai.qams[];ai.NW[]]}
 
 ai.pcol:{[u;rows;c]w:u c
   a:ai.attr w
@@ -407,9 +454,9 @@ ai.profile:{$[0=#x;[ai.say"usage: \\ai profile <table>";:0];0]
   $[in[@v;`M`m];;[ai.say"ai: ",($n)," is not a table or dict in this session.";:0]]
   rep:ai.try[ai.prof[n];v;"(could not profile this value)\n"]
   ai.o rep
-  ai.ask[ai.T.f;rep;"f";ai.qams[];0]}
+  ai.ask[ai.T.f;rep;"f";ai.qams[];ai.NP[]]}
 
-ai.optimize:{$[0=#x;[ai.say"usage: \\ai optimize <query>";:0];0];ai.ask[ai.T.o;x;"o";ai.qams[];0]}
+ai.optimize:{$[0=#x;[ai.say"usage: \\ai optimize <query>";:0];0];ai.ask[ai.T.o;x;"o";ai.qams[];ai.NP[]]}
 
 / ---- session hooks (called from repl.k) -----------------------------------
 / ai.ERR is STICKY -- it survives until the next failing line, so \ai why can
@@ -540,11 +587,11 @@ ai.c.warm:{a:trim x
   $[0=r2 0;;:1]
   g:1|(ai.st[])6
   tp:ai.PROBEN%g%1000
-  n:ai.np[]
+  n:ai.nmax[]|ai.np[]
   secs:n%1|tp
   need:ai.budget[1000*secs]
   cur:ai.qams[]
-  ai.say"ai: ~",($_0.5+tp)," tok/s, so a ",($n),"-token answer takes about ",($_0.5+secs),"s"
+  ai.say"ai: ~",($_0.5+tp)," tok/s, so the longest answer (",($n)," tokens) takes about ",($_0.5+secs),"s"
   $[need>cur;ai.raisebudget[cur;need];ai.say"ai: the ",($cur),"ms answer budget already covers that"]
   1}
 ai.raisebudget:{[cur;need]`aio[(2;need)];ai.say"ai: answer budget ",($cur),"ms -> ",($ai.qams[]),"ms so answers stop timing out (\\ai timeout N to override)";1}

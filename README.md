@@ -164,9 +164,19 @@ export AMBER_AI_KEEP_ALIVE=1h     # or "0" to unload at once, "-1" for forever
 export AMBER_AI_NUM_PREDICT=48    # generation dominates; fewer tokens, faster
 ```
 
-`AMBER_AI_NUM_PREDICT` is the biggest single lever after the load: the answer is
-an expression plus two short lines, so 48 is usually plenty and cuts the wait by
-more than half.
+`AMBER_AI_NUM_PREDICT` is the biggest single lever after the load. Each command
+scales off it rather than using it directly, because a one-line answer and a
+table profile do not need the same room:
+
+| command | tokens (at the 128 default) |
+|---|---|
+| `\ai`, `\ai explain` | 1.5x — 192 |
+| `\ai why` | 2x — 256 |
+| `\ai profile`, `\ai optimize` | 3.5x — 448 |
+
+Setting it to 48 scales all three down together and roughly halves the wait.
+`\ai warm` sizes the answer budget from the LONGEST of them, so raising the caps
+cannot move the timeout to `\ai profile`.
 
 The answer budget defaults to 10000 ms. The *first* question after a cold start can still exceed
 it while the backend loads weights, so raise it in any of three scopes:

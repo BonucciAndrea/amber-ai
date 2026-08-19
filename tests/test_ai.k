@@ -225,6 +225,34 @@ t[`sanCollapsesTabs;   ai.san"a\tb   c";"a b c"]
 t[`sanDropsControl;    ai.san"a",(`c$7),"b";"ab"]
 t[`sanKeepsPlain;      ai.san"select px from trades";"select px from trades"]
 t[`sanPassesNonString; ai.san 42;42]
+/x ---- wrapping: the border must close, whatever the model sends -----------
+/x A line wider than the terminal used to wrap at the EDGE, putting the right
+/x border in the middle of the next row. The decisive assertion is the last one:
+/x every rendered row is the SAME display width, so the frame cannot tear.
+LONG:"this is a very long line that will certainly exceed any sensible wrap width and would previously have torn the right hand border clean off the box"
+BLOB:"select avg px by sym from trades_with_an_absurdly_long_identifier_that_has_no_spaces_in_it_at_all"
+t[`wrapKeepsShort;     ai.wrap1[20;"short"];,"short"]
+t[`wrapSplitsLong;     1<#ai.wrap1[20;LONG];1]
+t[`wrapRespectsWidth;  |/20<ai.dw'ai.wrap1[20;LONG];0]
+t[`wrapHardBreaksBlob; |/20<ai.dw'ai.wrap1[20;BLOB];0]
+t[`wrapKeepsBlankLine; ai.wrap1[20;""];,""]
+t[`wrapWidthIsSane;    (24<ai.wrapw[])&ai.wrapw[]<200;1]
+/x widths are display COLUMNS: a box character is 3 bytes and 1 column
+t[`wrapCountsColumns;  |/10<ai.dw'ai.wrap1[10;"─────────────────────────"];0]
+t[`boxRowsAreEqualWidth;1=#?ai.dw'"\n"\ai.box LONG;1]
+/x The one that matters: no row may be WIDER THAN THE TERMINAL. Equal-width
+/x rows only prove the box is internally consistent -- an unwrapped box is that
+/x too, and still tears, because the TERMINAL folds it. Assert the fit.
+t[`boxFitsTerminal;    |/(4+ai.wrapw[])<ai.dw'"\n"\ai.box LONG;0]
+t[`boxFitsTerminalBlob;|/(4+ai.wrapw[])<ai.dw'"\n"\ai.box BLOB;0]
+t[`boxRowsEqualUnicode; 1=#?ai.dw'"\n"\ai.box"héllo wörld ünïcode ──────────────────────────────────────────────────────────────────── done";1]
+t[`boxBlobBorderCloses; 1=#?ai.dw'"\n"\ai.box BLOB;1]
+/x ---- per-task generation budgets ----------------------------------------
+/x One default for every command truncated \ai profile mid-identifier.
+t[`profileGetsMostTokens;(ai.NP[]>ai.NW[])&ai.NW[]>ai.NQ[];1]
+t[`warmSizesForLongest; ai.nmax[];ai.NP[]]
+/x the documented speed knob must still move all of them
+t[`budgetsTrackNumPredict;ai.NP[]>ai.np[];1]
 /x ---- keeping the model resident -----------------------------------------
 /x keep_alive only starts helping after a call the backend FINISHED, and on a
 /x 7B the first call is the one that times out -- so \ai warm exists to pay the
@@ -311,6 +339,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[152]
+hexpect[167]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]
