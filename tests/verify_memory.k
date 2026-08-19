@@ -31,6 +31,9 @@ ai.seed:{[k;s;c]S::S,,(k;s;c);}
 LOAD AM,"/lib/amber_ai_memory.k"
 FIX:{gentq x;}
 FIX 2000
+/ the bucketing exemplars derive a bucket column first; give them the table
+BARS:{bars::. qrw"update tb:xbar[300;time] from trades";}
+BARS 0
 bad:()
 chk:{[r]$[`FAIL~.[{. qrw x};,r 1;`FAIL];bad::bad,,r;0];}
 CHK:{chk'x;}

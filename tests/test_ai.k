@@ -183,16 +183,21 @@ t[`attrOfPlain;    ai.attr(+trades)`px;""]
 ai.M::()
 a4:ai.add["q";"select px from trades where px>10";"trades"]
 p:ai.prompt["Do the thing";"the question"]
+/x A second prompt from a query that IS about data, because exemplars are now
+/x gated: "the question" names no table and no db word, so it earns none.
+pq:ai.prompt["Do the thing";"select px from trades where px>10"]
 /x The prompt is what the model is CHARGED for, so these pin its shape.
 /x The schema block is now the compact one (ai.sch), not ai.ctx: names only,
 /x no types, no attributes, no row counts. ai.ctx is unchanged and still backs
 /x `\ai status`, where a human wants all of that -- see promptDropsRowCounts.
-t[`promptHasSchema;    has[p;"### Schema"];1]
-t[`promptSchemaCompact;has[p;"SCHEMAS: "];1]
-t[`promptHasTable;     has[p;"trades:("];1]
-t[`promptDropsRowCounts;has[p;" rows]"];0]
-t[`promptDropsColTypes;has[p;"trades:table("];0]
-t[`promptHasExamples;  has[p;"### Examples"];1]
+t[`promptHasSchema;    has[pq;"### Schema"];1]
+t[`promptSchemaCompact;has[pq;"SCHEMAS: "];1]
+t[`promptHasTable;     has[pq;"trades:("];1]
+t[`promptDropsRowCounts;has[pq;" rows]"];0]
+t[`promptDropsColTypes;has[pq;"trades:table("];0]
+t[`promptHasExamples;  has[pq;"### Examples"];1]
+t[`nonDbQueryNoExamples;has[p;"### Examples"];0]
+t[`nonDbQueryNoSchema;  has[p;"### Schema"];0]
 /x A query too short to carry keywords retrieves nothing: matches would be
 /x coincidental, and every exemplar is paid for in prefill.
 t[`shortQueryNoExamples;#ai.exs"2+2";0]
@@ -200,7 +205,27 @@ t[`longQueryHasExamples;0<#ai.exs"average price by symbol";1]
 t[`examplesAreCapped;   ai.NEX<#ai.exs"average price by symbol";0]
 /x ai.ctx keeps the detail the compact schema drops.
 t[`statusCtxKeepsRows;  has[ai.ctx[];" rows]"];1]
-t[`promptReplaysMemory;has[p;"select px from trades where px>10"];1]
+/x ---- generation rules live in the system prompt -------------------------
+t[`sysRule1;           has[ai.SYS;"RULE 1"];1]
+t[`sysRule2;           has[ai.SYS;"RULE 2"];1]
+t[`sysRule3;           has[ai.SYS;"RULE 3"];1]
+t[`sysForbidsAnsi;     has[ai.SYS;"NEVER ANSI SQL"];1]
+/x ---- a query is only a db query if it says so ---------------------------
+t[`dbqRejectsMath;     ai.dbq"2+2";0]
+t[`dbqAcceptsQuery;    ai.dbq"average price by symbol";1]
+t[`dbqSeesWorkspace;   ai.dbq"how big is trades";1]
+/x ---- time buckets force the WORKING two-step idiom ----------------------
+/x "by 300 xbar time" parses and silently returns unbucketed rows, so the
+/x forced exemplar derives the bucket column first.
+t[`bucketForcesXbar;   has["\n"/ai.exs"average px in 5 minute buckets";"xbar["];1]
+t[`bucketIdiomIsTwoStep;has["\n"/ai.exs"average px in 5 minute buckets";"update tb:xbar"];1]
+t[`corpusHasNoByXbar;  has["\n"/{x 3}'ai.SEED;"xbar time"];0]
+/x ---- records are sanitised on the way in ---------------------------------
+t[`sanCollapsesTabs;   ai.san"a\tb   c";"a b c"]
+t[`sanDropsControl;    ai.san"a",(`c$7),"b";"ab"]
+t[`sanKeepsPlain;      ai.san"select px from trades";"select px from trades"]
+t[`sanPassesNonString; ai.san 42;42]
+t[`promptReplaysMemory;has[pq;"select px from trades where px>10"];1]
 t[`promptHasTask;      has[p;"Do the thing"];1]
 t[`promptHasInput;     has[p;"the question"];1]
 t[`emptyBlockIsEmpty;  #ai.blk["h";""];0]
@@ -273,6 +298,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[129]
+hexpect[145]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]

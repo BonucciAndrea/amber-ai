@@ -677,7 +677,7 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
     if (json_escape(&req, sys ? sys : "") < 0) goto oom;
     if (buf_str(&req, "\",\"prompt\":\"") < 0) goto oom;
     if (json_escape(&req, user ? user : "") < 0) goto oom;
-    if (buf_str(&req, "\",\"stream\":false,\"temperature\":0.1") < 0) goto oom;
+    if (buf_str(&req, "\",\"stream\":false,\"temperature\":0.0") < 0) goto oom;
     /* Bound generation ALWAYS, not only when a caller named a token count.
      * Every \\ai command passes max_tokens = 0, so this used to emit a bare
      * {"temperature":0.1} and the server was free to run on. num_ctx is sent
@@ -688,7 +688,7 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
         int np = max_tokens > 0 ? max_tokens : g_num_predict;
         sprintf(num, ",\"max_tokens\":%d,\"n_predict\":%d", np, np);
         if (buf_str(&req, num) < 0) goto oom;
-        sprintf(num, ",\"options\":{\"temperature\":0.1,\"num_ctx\":%d,\"num_predict\":%d}",
+        sprintf(num, ",\"options\":{\"temperature\":0.0,\"num_ctx\":%d,\"num_predict\":%d}",
                 g_num_ctx, np);
         if (buf_str(&req, num) < 0) goto oom;
     }

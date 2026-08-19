@@ -78,7 +78,18 @@ ai.M:()
 ai.DIRTY:0
 ai.MAX:400
 
-ai.rec:{[k;t;h;s;c]ai.M::ai.M,,(k;t;h;s;c);}
+/ ---- record sanitiser -----------------------------------------------------
+/ Everything stored here is replayed to the model AND offered back as a Tab
+/ candidate, so a record is only as good as it is clean. A line can arrive
+/ carrying a control byte from a paste, an escape sequence from a coloured
+/ diagnostic, or a raw pointer from a printed handle: none of it reproducible,
+/ all of it teaching the model to emit noise. Keep printable ASCII (32..126),
+/ turn tabs into spaces, collapse runs.
+ai.prn:{x@&(31<i)&127>i:`i$x}
+ai.detab:{$[0=#x;x;`c$@[`i$x;&9=`i$x;:;32]]}
+ai.squash:{$[0=#x;x;" "/w@&0<#'w:" "\x]}
+ai.san:{v:ai.cv x;$[~`C~@v;x;ai.squash ai.prn ai.detab v]}
+ai.rec:{[k;t;h;s;c]ai.M::ai.M,,(k;t;h;ai.san s;ai.san c);}
 
 ai.readf:{{.[{. x};,x;{}]}'0:ai.memf[]}
 ai.load:{ai.M::();ai.try[ai.readf;0;0];#ai.M}
@@ -168,7 +179,7 @@ ai.learnschema:{{ai.add["s";ai.ndesc0 x;$x]}'ai.user[];#ai.M}
 / ============================================================================
 / 3. PROMPTING
 / ============================================================================
-ai.SYS:"You are the assistant built into Amber, a zero-dependency columnar time-series engine whose language is a K/q dialect very close to kdb+/q. Answer for THIS session using the schema you are given. Prefer vector and columnar idioms (select ... from ... where ..., aj, wj, sums, msum, movavg, peach) over loops. Attributes are `s sorted, `u unique, `p parted, `g grouped. Be concise: code first, then at most three short lines of explanation. Never invent table or column names that are not in the schema."
+ai.SYS:"Amber is a columnar time-series engine. Its language is a K/q dialect, NOT ANSI SQL.\nRULE 1: Output RAW executable code ONLY. No markdown fences, no prose.\nRULE 2: ALWAYS native Amber vector SQL -- select avg px by sym from trades. NEVER ANSI SQL: no avg(px), no GROUP BY, no AS, no quoted names.\nRULE 3: For a math or scalar question return ONLY the expression -- 2+2 gives 2+2. NEVER wrap a non-table question in select ... from.\nUse only names given in SCHEMAS."
 
 / Kinds worth replaying as few-shot examples: q lines that ran cleanly,
 / a accepted Tab suggestions, p questions previously asked.
@@ -188,7 +199,7 @@ ai.blk:{[h;b]$[0=#b;();(,"### ",h),$[`C~@b;,b;b]]}
 /          "2+2" retrieves by coincidence, so retrieve nothing.
 ai.SMAX:12
 ai.NEX:3
-ai.MINQ:10
+ai.MINQ:15
 
 / Compact schema for the MODEL. ai.ctx[] stays exactly as it was for
 / `\ai status`, where a human wants the types, attributes and row counts; the
@@ -214,8 +225,38 @@ ai.sch:{u:ai.user[]
   h:"SCHEMAS: ",("; "/ai.scol0'm)
   $[ai.SMAX<#u;h,"; (+",($(#u)-ai.SMAX)," more)";h]}
 
-ai.exs:{[q]$[ai.MINQ>#q;();ai.top[q;ai.NEX;ai.RK]]}
-ai.parts:{[task;q](ai.blk["Schema";ai.sch[]];ai.blk["Examples";ai.exs q];ai.blk["Task";task];ai.blk["Input";q])}
+/ A query only earns exemplars if it is about DATA. "2+2" retrieves by
+/ coincidence and pays for it in prefill; worse, three select-from examples in
+/ front of an arithmetic question are exactly what talk a small model into
+/ wrapping 2+2 in a select. So gate on keywords and on the names actually in
+/ this workspace, not on length alone.
+ai.KW:("select";"from";"where";"by";"table";"tables";"column";"columns";"row";"rows";"join";"group";"aggregate";"avg";"average";"mean";"sum";"count";"max";"min";"last";"first";"vwap";"twap";"price";"prices";"px";"sym";"syms";"symbol";"symbols";"trade";"trades";"quote";"quotes";"volume";"size";"schema";"query";"filter";"sort";"bucket";"buckets";"bar";"bars";"xbar";"minute";"minutes";"hour";"hours";"interval";"window";"ohlc";"candle";"time")
+ai.BKW:("bucket";"buckets";"bar";"bars";"xbar";"minute";"minutes";"hour";"hours";"interval";"window";"ohlc";"candle")
+ai.anyw:{[w;l]0<+/in[w;l]}
+ai.unames:{ai.try[{lower'$'ai.user[]};0;()]}
+ai.dbq:{[q]w:ai.words q;$[ai.anyw[w;ai.KW];1;ai.anyw[w;ai.unames[]]]}
+ai.wantbar:{ai.anyw[ai.words x;ai.BKW]}
+
+/ The bucketing idiom, forced in whenever the question is about time buckets.
+/ Two statements ON PURPOSE. "by 300 xbar time" PARSES in this dialect and is
+/ silently WRONG: the by-clause does not evaluate expressions, so the term is
+/ taken as a literal name, the bucket column comes back blank and the row count
+/ equals no bucketing at all (10 rows vs 1934 on a gentq workspace). An exemplar
+/ that is merely error-free is not good enough when the model copies it verbatim.
+ai.XB:("bars:update tb:xbar[300;time] from trades";"select avg px by sym,tb from bars")
+
+ai.exs:{[q]
+  b:ai.wantbar q
+  $[(~b)&(ai.MINQ>#q)|~ai.dbq q;:();0]
+  e:$[ai.dbq q;ai.top[q;ai.NEX;ai.RK];()]
+  $[b;ai.NEX#ai.XB,e;e]}
+/ A non-data question gets NO schema and NO exemplars. That is a token saving,
+/ but mostly it removes the temptation: a small model shown a table schema and
+/ three select-from examples will wrap "2+2" in a select whatever RULE 3 says.
+/ The cheapest way to stop it inventing a query is to give it nothing to invent
+/ one from.
+ai.parts:{[task;q]d:ai.dbq q
+  ($[d;ai.blk["Schema";ai.sch[]];()];ai.blk["Examples";ai.exs q];ai.blk["Task";task];ai.blk["Input";q])}
 ai.prompt:{[task;q]"\n"/,/ai.parts[task;q]}
 
 / Records stay one short line: they are replayed as few-shot examples AND
@@ -341,7 +382,7 @@ ai.diag:{s:ai.st[]
 / ============================================================================
 / 4. THE \ai COMMANDS
 / ============================================================================
-ai.T.q:"Write Amber (K/q) code that answers the question. Give the expression first, then at most three short lines of explanation."
+ai.T.q:"Answer with Amber code first, then at most two short lines of explanation."
 ai.T.e:"Explain this Amber/K expression step by step, innermost first, in plain English. Say what each verb and adverb does and what the result looks like. Do not rewrite it unless it is wrong."
 ai.T.w:"Diagnose this Amber error against the session schema above. State the most likely cause in one sentence, then give the corrected expression. Watch for type mismatches, `s and `p attribute assumptions, join-key mismatches, rank errors, and list/atom confusion."
 ai.T.f:"Given this profile of one table, recommend concrete vector-performance changes: which columns want `s `u `p or `g, which lookups then become O(1) or O(log n), what is worth pre-aggregating, and what to avoid. Be specific and short."

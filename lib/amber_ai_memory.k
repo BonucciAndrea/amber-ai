@@ -15,6 +15,14 @@
 / through, and is known to evaluate without error. Regenerate and re-check
 / with tests/verify_memory.k.
 / .
+/ Time bucketing is the TWO-STEP form, and that is not a style choice:
+/     bars:update tb:xbar[300;time] from trades
+/     select avg px by sym,tb from bars
+/ "select ... by 300 xbar time from trades" PARSES and is silently WRONG --
+/ the by-clause does not evaluate expressions, so the term becomes a literal
+/ column name, the bucket column comes back blank and the row count equals no
+/ bucketing at all. Eleven entries here taught that form until it was measured.
+/ .
 / NB: the "/ ." spacer lines are not a typo. A line holding nothing but "/" opens
 / a BLOCK comment in this dialect and swallows everything to the next lone "\",
 / so a plain blank comment line here would silently disable the whole corpus --
@@ -66,16 +74,16 @@ ai.seed["q";"select wavg[sz;px] by sym from trades where sz>0";"trades filter + 
 ai.seed["q";"select count px by sym from trades where px>0";"trades filter + aggregate"]
 ai.seed["q";"select max px by sym from trades where sz>100";"trades filter + aggregate"]
 ai.seed["q";"select avg px by sym from trades where (px>90)&px<110";"trades filter + aggregate"]
-ai.seed["q";"select avg px by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select sum sz by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select last px by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select avg px by sym,100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select sum sz by sym,100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select wavg[sz;px] by sym,100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select high:max px,low:min px by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select o:first px,h:max px,l:min px,c:last px by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select cnt:#px by 100 xbar time from trades";"time bucketing with xbar"]
-ai.seed["q";"select avg px by 1000 xbar time from trades";"time bucketing with xbar"]
+ai.seed["q";"select avg px by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select sum sz by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select last px by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select avg px by sym,tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select sum sz by sym,tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select wavg[sz;px] by sym,tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select high:max px,low:min px by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select o:first px,h:max px,l:min px,c:last px by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"select cnt:#px by tb from bars";"time bucketing with xbar"]
+ai.seed["q";"bars:update tb:xbar[300;time] from trades";"time bucketing with xbar"]
 ai.seed["q";"xbar[100;trades`time]";"time bucketing with xbar"]
 ai.seed["q";"xbar[1000;trades`time]";"time bucketing with xbar"]
 ai.seed["q";"update vw:wavg[sz;px] by sym from trades";"update / delete"]
@@ -162,10 +170,10 @@ ai.seed["q";"deltas trades`time";"gap and session helpers"]
 ai.seed["q";"(trades`time)-prev trades`time";"gap and session helpers"]
 ai.seed["q";"max deltas trades`time";"gap and session helpers"]
 ai.seed["q";"avg deltas trades`time";"gap and session helpers"]
-ai.seed["q";"select avg px by 100 xbar time from trades";"time bucketed series"]
-ai.seed["q";"select vwap:wavg[sz;px] by 100 xbar time from trades";"time bucketed series"]
-ai.seed["q";"select cnt:#px by 100 xbar time from trades";"time bucketed series"]
-ai.seed["q";"select sum sz by 100 xbar time from trades";"time bucketed series"]
+ai.seed["q";"select avg px by tb from bars";"time bucketed series"]
+ai.seed["q";"select vwap:wavg[sz;px] by tb from bars";"time bucketed series"]
+ai.seed["q";"select cnt:#px by tb from bars";"time bucketed series"]
+ai.seed["q";"select sum sz by tb from bars";"time bucketed series"]
 
 / ---- adverbs -------------------------------------------------------------
 ai.seed["q";"+/'(1 2;3 4)";"each"]
