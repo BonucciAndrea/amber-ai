@@ -184,6 +184,7 @@ void am_net_set_tab_on(int on) { am_net_init(); g_tab_on = !!on; }
 int  am_net_last_ms(void)      { return g_last_ms; }
 void am_net_clear_backoff(void){ g_dead_until = 0; }
 
+
 const char *am_net_strerror(int rc) {
     switch (rc) {
         case AMNET_OK:     return "ok";
@@ -660,13 +661,84 @@ static char *json_find_str(const char *doc, const char *key, size_t *lenout) {
     return NULL;
 }
 
+/* Build the request body. Shared by the blocking and the streaming paths so
+ * they cannot drift: a field added for one is sent by both.
+ * max_tokens < 0 means UNCAPPED -- generate until the model stops. That is only
+ * safe alongside streaming, where the deadline is an IDLE timeout: an answer
+ * that is still arriving is not a hang, and one that stops arriving is. */
+static int build_payload(Buf *req, const char *sys, const char *user,
+                         int max_tokens, int stream) {
+    char num[128];
+    int np = max_tokens > 0 ? max_tokens : (max_tokens < 0 ? -1 : g_num_predict);
+    if (buf_str(req, "{\"model\":\"") < 0) return -1;
+    if (json_escape(req, g_model) < 0) return -1;
+    if (buf_str(req, "\",\"system\":\"") < 0) return -1;
+    if (json_escape(req, sys ? sys : "") < 0) return -1;
+    if (buf_str(req, "\",\"prompt\":\"") < 0) return -1;
+    if (json_escape(req, user ? user : "") < 0) return -1;
+    if (buf_str(req, stream ? "\",\"stream\":true,\"temperature\":0.0"
+                            : "\",\"stream\":false,\"temperature\":0.0") < 0) return -1;
+    sprintf(num, ",\"max_tokens\":%d,\"n_predict\":%d", np, np);
+    if (buf_str(req, num) < 0) return -1;
+    sprintf(num, ",\"options\":{\"temperature\":0.0,\"num_ctx\":%d,\"num_predict\":%d}",
+            g_num_ctx, np);
+    if (buf_str(req, num) < 0) return -1;
+    if (g_keep_alive[0]) {
+        if (buf_str(req, ",\"keep_alive\":\"") < 0) return -1;
+        if (json_escape(req, g_keep_alive) < 0) return -1;
+        if (buf_str(req, "\"") < 0) return -1;
+    }
+    return buf_str(req, "}");
+}
+
+/* Find the next COMPLETE "key":"value" at or after *off.
+ * Returns 1 and hands back the unescaped value, 0 when the record has not
+ * fully arrived yet (the closing quote is still in flight -- a token split
+ * across two TCP reads), -1 on allocation failure. Scanning for whole records
+ * rather than decoding the chunked framing is what lets this read a chunked
+ * NDJSON stream without an incremental de-chunker: chunk-size lines simply are
+ * not "response":"..." and are skipped as noise. */
+static int next_field(const char *buf, size_t n, size_t *off, const char *key,
+                      char **out, size_t *outlen) {
+    size_t klen = strlen(key);
+    const char *base = buf, *p = buf + *off, *end = buf + n, *q;
+    while ((p = strstr(p, key)) != NULL) {
+        if (p > base && p[-1] == '"') {
+            q = p + klen;
+            if (*q == '"') {
+                q++;
+                while (*q == ' ' || *q == '\t') q++;
+                if (*q == ':') {
+                    q++;
+                    while (*q == ' ' || *q == '\t') q++;
+                    if (*q == '"') {
+                        const char *r = q + 1;      /* find the closing quote */
+                        while (r < end && *r) {
+                            if (*r == '\\') { r += 2; continue; }
+                            if (*r == '"') break;
+                            r++;
+                        }
+                        if (r >= end || *r != '"') return 0;   /* still in flight */
+                        *out = json_unescape(q, outlen);
+                        if (!*out) return -1;
+                        *off = (size_t)(r + 1 - base);
+                        return 1;
+                    }
+                }
+            }
+        }
+        p += klen;
+    }
+    *off = n > klen ? n - klen : *off;   /* keep a little overlap for a split key */
+    return 0;
+}
+
 int am_net_generate(const char *sys, const char *user, int timeout_ms,
                     int max_tokens, char **out, size_t *out_len) {
     Buf req;
     char *body = NULL, *text;
     size_t blen = 0;
     int rc;
-    char num[96];   /* holds the longest options fragment below */
 
     if (out) *out = NULL;
     if (out_len) *out_len = 0;
@@ -679,37 +751,9 @@ int am_net_generate(const char *sys, const char *user, int timeout_ms,
     /* One payload that every supported backend understands: Ollama reads
      * model/prompt/system/stream/options, llama.cpp's server reads
      * prompt/n_predict/temperature, OpenAI-compatible servers read
-     * model/prompt/max_tokens. Unknown keys are ignored by all three. */
-    if (buf_str(&req, "{\"model\":\"") < 0) goto oom;
-    if (json_escape(&req, g_model) < 0) goto oom;
-    if (buf_str(&req, "\",\"system\":\"") < 0) goto oom;
-    if (json_escape(&req, sys ? sys : "") < 0) goto oom;
-    if (buf_str(&req, "\",\"prompt\":\"") < 0) goto oom;
-    if (json_escape(&req, user ? user : "") < 0) goto oom;
-    if (buf_str(&req, "\",\"stream\":false,\"temperature\":0.0") < 0) goto oom;
-    /* Bound generation ALWAYS, not only when a caller named a token count.
-     * Every \\ai command passes max_tokens = 0, so this used to emit a bare
-     * {"temperature":0.1} and the server was free to run on. num_ctx is sent
-     * for the same reason in reverse: the prompt is short, so say so, and the
-     * backend stops sizing its KV cache for a context that never arrives.
-     * The three spellings cover the three server families named above. */
-    {
-        int np = max_tokens > 0 ? max_tokens : g_num_predict;
-        sprintf(num, ",\"max_tokens\":%d,\"n_predict\":%d", np, np);
-        if (buf_str(&req, num) < 0) goto oom;
-        sprintf(num, ",\"options\":{\"temperature\":0.0,\"num_ctx\":%d,\"num_predict\":%d}",
-                g_num_ctx, np);
-        if (buf_str(&req, num) < 0) goto oom;
-    }
-    /* Keep the model resident. Ollama reads this; llama.cpp and the
-     * OpenAI-compatible servers ignore an unknown key, as with every other
-     * field above. json_escape because it is user-settable. */
-    if (g_keep_alive[0]) {
-        if (buf_str(&req, ",\"keep_alive\":\"") < 0) goto oom;
-        if (json_escape(&req, g_keep_alive) < 0) goto oom;
-        if (buf_str(&req, "\"") < 0) goto oom;
-    }
-    if (buf_str(&req, "}") < 0) goto oom;
+     * model/prompt/max_tokens. Unknown keys are ignored by all three.
+     * Built by build_payload so the streaming path cannot drift from this one. */
+    if (build_payload(&req, sys, user, max_tokens, 0) < 0) goto oom;
 
     rc = am_net_post(g_url, req.p, timeout_ms, &body, &blen);
     free(req.p);
@@ -734,5 +778,133 @@ oom:
     free(req.p);
     return AMNET_EMEM;
 }
+
+/* ---- streaming generation -------------------------------------------------
+ * The blocking path above waits for the whole answer, then hands it over. That
+ * is why a long answer feels like a hang: nothing is on screen until the last
+ * token is written. Here the body is consumed as it arrives and each fragment
+ * is handed to `sink` immediately.
+ *
+ * Two things make this safe to leave UNCAPPED (num_predict -1):
+ *
+ *   1. The deadline is an IDLE timeout, reset on every byte received. An answer
+ *      that is still arriving is not a hang; one that stops arriving is. A
+ *      total-response deadline would kill exactly the long answers streaming
+ *      exists to make bearable.
+ *   2. AM_BODY_MAX still bounds the total, so a runaway backend cannot exhaust
+ *      memory.
+ *
+ * Ollama streams NDJSON under chunked transfer-encoding. Rather than decode the
+ * chunk framing incrementally, next_field() scans for COMPLETE "response":"..."
+ * records: chunk-size lines are not that shape, so they are skipped as noise,
+ * and a record split across two reads is simply left until the rest arrives.
+ */
+int am_net_generate_stream(const char *sys, const char *user, int idle_ms,
+                           am_net_sink sink, void *ud) {
+    char host[AM_HOST_MAX], port[16], path[AM_PATH_MAX];
+    char head[AM_HOST_MAX + AM_PATH_MAX + 256];
+    Buf req, resp;
+    long long started, deadline;
+    size_t hdrlen = 0, off = 0, blen;
+    const char *key = NULL;
+    int fd = -1, rc, status = 0, done = 0, emitted = 0;
+
+    if (!sink) return AMNET_EARG;
+    am_net_init();
+    if (!g_on) return AMNET_EOFF;
+
+    started = am_net_now_ms();
+    if (g_dead_until && started < g_dead_until) return AMNET_ECONN;
+
+    rc = parse_url(g_url, host, sizeof host, port, sizeof port, path, sizeof path);
+    if (rc != AMNET_OK) return rc;
+
+    if (idle_ms <= 0) idle_ms = g_qa_ms;
+    deadline = started + idle_ms;
+
+    rc = dial(host, port, deadline, &fd);
+    if (rc != AMNET_OK) {
+        if (rc == AMNET_ECONN) g_dead_until = am_net_now_ms() + AM_NET_BACKOFF_MS;
+        g_last_ms = (int)(am_net_now_ms() - started);
+        return rc;
+    }
+    g_dead_until = 0;
+
+    req.p = NULL; req.n = 0; req.cap = 0;
+    if (build_payload(&req, sys, user, -1, 1) < 0) {
+        close(fd); free(req.p); return AMNET_EMEM;
+    }
+    blen = req.n;
+    if (snprintf(head, sizeof head,
+                 "POST %s HTTP/1.1\r\n"
+                 "Host: %s:%s\r\n"
+                 "User-Agent: amber-ai/2.0.0\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Accept: application/x-ndjson\r\n"
+                 "Connection: close\r\n"
+                 "Content-Length: %lu\r\n\r\n",
+                 path, host, port, (unsigned long)blen) >= (int)sizeof head) {
+        close(fd); free(req.p); return AMNET_EURL;
+    }
+    rc = send_all(fd, head, strlen(head), deadline);
+    if (rc == AMNET_OK) rc = send_all(fd, req.p, blen, deadline);
+    free(req.p);
+    if (rc != AMNET_OK) {
+        close(fd); g_last_ms = (int)(am_net_now_ms() - started); return rc;
+    }
+
+    resp.p = NULL; resp.n = 0; resp.cap = 0;
+    for (;;) {
+        char tmp[4096];
+        ssize_t k;
+        rc = wait_io(fd, POLLIN, deadline);
+        if (rc != AMNET_OK) break;
+        k = recv(fd, tmp, sizeof tmp, 0);
+        if (k == 0) { rc = AMNET_OK; break; }
+        if (k < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            rc = AMNET_ECONN; break;
+        }
+        if (buf_add(&resp, tmp, (size_t)k) < 0) { rc = AMNET_EMEM; break; }
+        deadline = am_net_now_ms() + idle_ms;      /* idle, not total */
+
+        if (!hdrlen) {
+            char *sep = strstr(resp.p, "\r\n\r\n");
+            if (sep) {
+                hdrlen = (size_t)(sep - resp.p) + 4;
+                if (resp.n >= 12 && !strncmp(resp.p, "HTTP/1.", 7))
+                    status = atoi(resp.p + 9);
+                off = hdrlen;
+            }
+        }
+        if (hdrlen) {
+            if (!key) {
+                if (strstr(resp.p + hdrlen, "\"response\"")) key = "response";
+                else if (strstr(resp.p + hdrlen, "\"content\"")) key = "content";
+            }
+            while (key) {
+                char *frag = NULL; size_t fl = 0;
+                int r = next_field(resp.p, resp.n, &off, key, &frag, &fl);
+                if (r < 0) { rc = AMNET_EMEM; goto stop; }
+                if (r == 0) break;
+                if (fl) { emitted = 1; if (sink(frag, fl, 0, ud) != 0) { free(frag); done = 1; break; } }
+                free(frag);
+            }
+            if (strstr(resp.p + hdrlen, "\"done\":true")) done = 1;
+        }
+        if (done) { rc = AMNET_OK; break; }
+        if (resp.n > AM_BODY_MAX) { rc = AMNET_EPROTO; break; }
+    }
+stop:
+    close(fd);
+    g_last_ms = (int)(am_net_now_ms() - started);
+    free(resp.p);
+    if (rc != AMNET_OK) return rc;
+    if (status && (status < 200 || status > 299)) return AMNET_EHTTP;
+    if (!emitted) return AMNET_EPROTO;
+    sink(NULL, 0, 1, ud);                /* let the sink close its box */
+    return AMNET_OK;
+}
+
 
 #endif /* wasm */

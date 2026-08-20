@@ -51,6 +51,14 @@
 
 static int failures = 0, checks = 0;
 
+/* collects streamed fragments and counts how many times it was called */
+static int t_sink(const char *frag, size_t n, int done, void *ud) {
+    struct { char *p; size_t *n; int *c; } *c = ud;
+    if (done) return 0;
+    if (frag && n) { memcpy(c->p + *c->n, frag, n); *c->n += n; c->p[*c->n] = 0; (*c->c)++; }
+    return 0;
+}
+
 static void ck(int cond, const char *what) {
     checks++;
     if (!cond) { failures++; printf("  FAIL %s\n", what); }
@@ -172,6 +180,17 @@ static void server_url(Server *s, char *out, size_t cap) {
     "a\r\nunked ok\"}\r\n" \
     "0\r\n\r\n"
 
+/* NDJSON under chunked framing, exactly the shape Ollama streams. The record
+ * boundaries deliberately do NOT line up with the chunk boundaries: a token
+ * split across two chunks is the case the incremental reader has to survive. */
+#define RSP_NDJSON \
+    "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n" \
+    "Transfer-Encoding: chunked\r\n\r\n" \
+    "20\r\n{\"response\":\"select \",\"done\":fa\r\n" \
+    "1f\r\nlse}\n{\"response\":\"px \",\"done\":false}\r\n" \
+    "2c\r\n\n{\"response\":\"from t\",\"done\":false}\n{\"done\":true}\n\r\n" \
+    "0\r\n\r\n"
+
 #define RSP_LLAMACPP \
     "HTTP/1.1 200 OK\r\nContent-Length: 24\r\n\r\n" \
     "{\"content\":\"from llama\"}"
@@ -261,6 +280,23 @@ int main(void) {
         ck(strstr(s.request, "\"num_predict\":16")     != NULL, "payload: num_predict honours the caller");
         ck(strstr(s.request, "\"keep_alive\":\"30m\"") != NULL, "payload: keep_alive keeps the model resident");
         free(out); out = NULL;
+        close(s.fd);
+    }
+
+    /* ---- 4b. streaming: fragments must arrive as they are read ------------ */
+    {   Server s;
+        char acc[256]; int calls = 0; size_t used = 0;
+        struct { char *p; size_t *n; int *c; } ctx;
+        server_start(&s, RSP_NDJSON, 0, 0);
+        server_url(&s, url, sizeof url); am_net_set_url(url); am_net_clear_backoff();
+        acc[0] = 0; ctx.p = acc; ctx.n = &used; ctx.c = &calls;
+        rc = am_net_generate_stream("s", "u", 3000, t_sink, &ctx);
+        ck(rc == AMNET_OK, "stream: request ok");
+        ck_str(acc, "select px from t", "stream: fragments reassemble in order");
+        ck(calls >= 3, "stream: delivered incrementally, not in one lump");
+        /* the payload must say so, and must be uncapped */
+        ck(strstr(s.request, "\"stream\":true")   != NULL, "stream: payload asks for streaming");
+        ck(strstr(s.request, "\"num_predict\":-1") != NULL, "stream: generation is uncapped");
         close(s.fd);
     }
 

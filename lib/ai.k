@@ -354,11 +354,28 @@ ai.box:{[t]
 / \ai profile and \ai optimize all end in ai.emit.
 ai.emit:{t:ai.clean x;$[ai.BOX;t:ai.box t;0];ai.o[t,ai.nl t];}
 
+/ ---- streaming --------------------------------------------------------------
+/ `ais renders the answer itself, live, into a box that grows as the text does.
+/ It has to: the fragments arrive inside the C poll loop, and re-entering the
+/ interpreter from there to call ai.box would mean re-entrancy mid-read. So the
+/ streaming path renders in C and the k renderer keeps everything NOT streamed
+/ (\\ai warm, diagnostics, \\ai profile's own report).
+/ .
+/ Streaming is also what makes UNCAPPED generation safe: `ais sends
+/ num_predict -1 and the deadline becomes an IDLE timeout, so an answer that is
+/ still arriving is never cut off, while one that stops arriving still ends.
+/ mx is therefore ignored on this path -- it exists for the blocking one.
+ai.STREAM:1
+ai.th:{v:ai.try[{x;repl.lines};0;24];$[`i~@v;v;24]}
+ai.streaming:{ai.STREAM&ai.BOX}
+
 ai.ask:{[task;q;k;tmo;mx]
   $[ai.ison[];;[ai.say"ai: the agent is switched off. Turn it back on with:  \\ai on";:0]]
-  r:`ai[(ai.SYS;ai.prompt[task;q];tmo;mx)]
+  sm:ai.streaming[]
+  p:ai.prompt[task;q]
+  r:$[sm;`ais[(ai.SYS;p;tmo;4+ai.wrapw[];ai.th[])];`ai[(ai.SYS;p;tmo;mx)]]
   $[0=r 0;;:ai.diag r]
-  ai.emit r 1
+  $[sm;0;ai.emit r 1]
   ai.add[k;ai.short q;ai.ctxnames[]]
   ai.flush[]
   1}
@@ -486,6 +503,7 @@ ai.status:{s:ai.st[]
   ai.say"  model      : ",s 3
   ai.say"  budgets    : ",($s 4),"ms answer, ",($s 5),"ms tab   (last call ",($s 6),"ms)"
   ai.say"  boxed out  : ",$[ai.BOX;"on";"off"]
+  ai.say"  streaming  : ",$[ai.streaming[];"on (uncapped)";"off"]
   ai.say"  keep alive : ",ai.ka[]," (\\ai warm preloads; AMBER_AI_KEEP_ALIVE overrides)"
   ai.say"  memory     : ",($#ai.M),ai.plural[#ai.M;" record"]," in ",ai.memf[]
   ai.say"  seed corpus: ",($#ai.SEED),ai.plural[#ai.SEED;" example"],$[0=#ai.SEED;" (lib/amber_ai_memory.k not found)";" shipped"]
@@ -516,6 +534,7 @@ ai.hl"  \\ai tab on | tab off  inline Tab suggestions (default ON)"
 ai.hl"  \\ai status            endpoint, model, budgets, memory, workspace"
 ai.hl"  \\ai warm [ms]         preload the model so the first question is not slow"
 ai.hl"  \\ai box [on|off]      frame answers in a box (off when piping output)"
+ai.hl"  \\ai stream [on|off]   live token-by-token output (off = one blocking call)"
 ai.hl"  \\ai memory            what the agent has learned so far"
 ai.hl"  \\ai learn             record the current schema into memory"
 ai.hl"  \\ai forget            erase the persistent memory file"
@@ -595,6 +614,10 @@ ai.c.warm:{a:trim x
   $[need>cur;ai.raisebudget[cur;need];ai.say"ai: the ",($cur),"ms answer budget already covers that"]
   1}
 ai.raisebudget:{[cur;need]`aio[(2;need)];ai.say"ai: answer budget ",($cur),"ms -> ",($ai.qams[]),"ms so answers stop timing out (\\ai timeout N to override)";1}
+ai.c.stream:{a:trim x
+  $[0=#a;;ai.STREAM::~"off"~lower a]
+  ai.say"ai: streaming ",$[ai.STREAM;"on (answers appear as they are written, uncapped)";"off (one blocking call, capped)"]
+  1}
 ai.c.box:{a:trim x
   $[0=#a;;ai.BOX::~"off"~lower a]
   ai.say"ai: boxed output ",$[ai.BOX;"on";"off"]
@@ -604,8 +627,8 @@ ai.c.forget:{x;ai.forget[];ai.say"ai: memory cleared";1}
 ai.c.learn:{x;ai.dolearn[]}
 ai.c.serve:{x;ai.doserve[]}
 
-ai.K:`help`status`on`off`retry`serve`warm`tab`box`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
-ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.c.warm;ai.tab;ai.c.box;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
+ai.K:`help`status`on`off`retry`serve`warm`tab`box`stream`memory`forget`learn`model`url`timeout`tabtimeout`explain`why`profile`optimize
+ai.V:(ai.c.help;ai.c.status;ai.c.on;ai.c.off;ai.c.retry;ai.c.serve;ai.c.warm;ai.tab;ai.c.box;ai.c.stream;ai.c.memory;ai.c.forget;ai.c.learn;ai.setmodel;ai.seturl;ai.settmo;ai.settab;ai.explain;ai.why;ai.profile;ai.optimize)
 ai.D:ai.K!ai.V
 
 / \ai <rest of line>.  Anything that is not a known sub-command is a question.

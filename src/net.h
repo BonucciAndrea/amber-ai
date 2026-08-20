@@ -84,6 +84,14 @@ int am_net_post(const char *url, const char *body, int timeout_ms,
  *   OpenAI-compat  {"choices":[{"message":{"content":"..."}}]} / {"text":"..."}
  * `max_tokens` <= 0 means "let the backend decide".  On AMNET_OK the decoded
  * (JSON-unescaped) text is returned in *out, malloc'd and NUL-terminated. */
+/* Streaming generation. `sink` is called with each fragment as it arrives, then
+ * once more with (NULL,0,done=1) when the answer is complete. Returning
+ * non-zero from the sink stops the read early. The timeout is an IDLE timeout,
+ * measured from the last byte received, so a long answer is not cut off. */
+typedef int (*am_net_sink)(const char *frag, size_t n, int done, void *ud);
+int am_net_generate_stream(const char *sys, const char *user, int idle_ms,
+                           am_net_sink sink, void *ud);
+
 int am_net_generate(const char *sys, const char *user, int timeout_ms,
                     int max_tokens, char **out, size_t *out_len);
 

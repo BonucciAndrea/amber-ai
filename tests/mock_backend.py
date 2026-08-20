@@ -27,6 +27,7 @@ output, and --slow lets a test drive the deadline path in src/net.c.
 amber-ai - GNU AGPLv3 - see LICENSE and NOTICE.
 """
 import json
+import re
 import socket
 import sys
 import time
@@ -36,6 +37,7 @@ MODELS = {"models": [{"name": "qwen2.5-coder:0.5b"}, {"name": "llama3.2:1b"}]}
 
 SHAPE = "ollama"
 DELAY = 0.0
+STREAM_DELAY = 0.0
 
 ANSWER_TAB = "select sym,px from trades"
 ANSWER_WHY = "MOCK-DIAGNOSIS: that name is not defined in this workspace."
@@ -89,11 +91,42 @@ class Handler(BaseHTTPRequestHandler):
             text = ANSWER_WHY
         else:
             text = ANSWER_ANY
-        self._send(envelope(text, req.get("model", "mock")))
+        if req.get("stream"):
+            self._stream(text, req.get("model", "mock"))
+        else:
+            self._send(envelope(text, req.get("model", "mock")))
+
+    def _stream(self, text, model):
+        """NDJSON, one object per line, exactly as Ollama streams it.
+
+        Chunked transfer encoding, because that is what a real server uses and
+        it is the framing the client has to survive: a token can land split
+        across two TCP reads, and the reader must not mistake a chunk header
+        for content."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        toks = re.findall(r"\S+\s*", text) or [text]
+        for i, t in enumerate(toks):
+            obj = {"model": model, "response": t, "done": False}
+            self._chunk(json.dumps(obj, separators=(",", ":")) + "\n")
+            if STREAM_DELAY:
+                time.sleep(STREAM_DELAY)
+        self._chunk(json.dumps({"model": model, "response": "",
+                                "done": True, "done_reason": "stop"},
+                               separators=(",", ":")) + "\n")
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _chunk(self, s):
+        b = s.encode()
+        self.wfile.write(("%x\r\n" % len(b)).encode() + b + b"\r\n")
+        self.wfile.flush()
 
 
 def main():
-    global SHAPE, DELAY
+    global SHAPE, DELAY, STREAM_DELAY
     port = 11434
     args = sys.argv[1:]
     i = 0
@@ -109,6 +142,11 @@ def main():
             DELAY = float(args[i])
         elif a.startswith("--slow="):
             DELAY = float(a.split("=", 1)[1])
+        elif a == "--tokdelay":
+            i += 1
+            STREAM_DELAY = float(args[i])
+        elif a.startswith("--tokdelay="):
+            STREAM_DELAY = float(a.split("=", 1)[1])
         else:
             port = int(a)
         i += 1

@@ -63,6 +63,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define AMBER_AI_VERSION "2.0.0"
 
@@ -137,6 +138,202 @@ static A aiC(A x) {
 }
 
 /* ======================================================================== */
+/* ---------------------------------------------------------------------------
+ * 1b.  `ais -- STREAMING ask, rendered live into a box that grows with it
+ *
+ *      `ais (system; prompt; idleMs; width)  ->  (rc; fullText)
+ *
+ * Why this is in C rather than lib/ai.k: the fragments arrive inside
+ * am_net_generate_stream's poll loop, and calling back into the interpreter
+ * from there would mean re-entering it mid-read. The k box renderer stays as
+ * it is for everything that is NOT streamed (\ai warm, diagnostics).
+ *
+ * The box GROWS. A row already on screen cannot be widened in place, so the
+ * text is buffered and the whole box is redrawn -- cursor up, clear, reprint --
+ * whenever the layout changes. Throttled, because redrawing per token on a fast
+ * backend is thousands of repaints a second for no visible benefit.
+ *
+ * If the box ever grows taller than the terminal it stops redrawing and simply
+ * appends: once the top has scrolled off, "cursor up N" no longer addresses the
+ * rows we drew, and repainting would corrupt the scrollback.
+ * ------------------------------------------------------------------------- */
+
+#define AI_BOX_MIN   24
+#define AI_BOX_MS    40          /* redraw throttle */
+
+typedef struct {
+    char  *t;                    /* everything received so far */
+    size_t n, cap;
+    int    rows;                 /* rows of the box last drawn, borders included */
+    int    inner;                /* inner width last drawn */
+    int    maxw;                 /* terminal width - 4 */
+    int    maxrows;              /* terminal height - 2 */
+    int    drawn;
+    int    frozen;               /* too tall to repaint: append-only from here */
+    int    live;                 /* stdout is a terminal: repaint in place */
+    size_t shown;                /* bytes already on screen */
+    long long last;
+} AiBox;
+
+/* display columns: a UTF-8 continuation byte belongs to the previous character */
+static int ai_dw(const char *s, size_t n) {
+    size_t i; int w = 0;
+    for (i = 0; i < n; i++) if ((s[i] & 0xC0) != 0x80) w++;
+    return w;
+}
+/* longest byte-prefix of s[0..n) that fits in `cols` display columns */
+static size_t ai_fit(const char *s, size_t n, int cols) {
+    size_t i; int w = 0;
+    for (i = 0; i < n; i++) {
+        if ((s[i] & 0xC0) != 0x80) { if (w == cols) return i; w++; }
+    }
+    return n;
+}
+static void ai_put(const char *s, size_t n) { fwrite(s, 1, n, stdout); }
+
+/* one wrapped row at a time; returns bytes consumed from s */
+static size_t ai_row(const char *s, size_t n, int cols, size_t *outlen) {
+    size_t take, i, brk;
+    const char *nl = memchr(s, '\n', n);
+    size_t seg = nl ? (size_t)(nl - s) : n;
+    if (ai_dw(s, seg) <= cols) { *outlen = seg; return nl ? seg + 1 : seg; }
+    take = ai_fit(s, seg, cols);
+    brk = 0;
+    for (i = 0; i < take; i++) if (s[i] == ' ') brk = i;
+    if (brk == 0) { *outlen = take; return take; }        /* no space: hard break */
+    *outlen = brk;
+    return brk + 1;                                        /* swallow the space */
+}
+/* a line that is only a ``` fence is markdown scaffolding, not code */
+static int ai_fence(const char *s, size_t len) {
+    size_t i = 0;
+    while (i < len && (s[i] == ' ' || s[i] == '\t')) i++;
+    return len - i >= 3 && !strncmp(s + i, "```", 3);
+}
+
+static void ai_box_draw(AiBox *b, int final) {
+    const char *p = b->t, *e = b->t + b->n;
+    int want = AI_BOX_MIN, rows = 0, i;
+    size_t adv, len;
+    const char *q;
+
+    /* widest natural line, capped at the terminal */
+    for (q = p; q < e; ) {
+        const char *nl = memchr(q, '\n', (size_t)(e - q));
+        size_t seg = nl ? (size_t)(nl - q) : (size_t)(e - q);
+        int w = ai_dw(q, seg);
+        if (w > want) want = w;
+        q = nl ? nl + 1 : e;
+    }
+    if (want > b->maxw) want = b->maxw;
+
+    /* count the rows this layout needs */
+    for (q = p; q < e; ) {
+        adv = ai_row(q, (size_t)(e - q), want, &len);
+        if (!ai_fence(q, len)) rows++;
+        q += adv ? adv : 1;
+    }
+    if (rows == 0) rows = 1;
+
+    if (b->drawn && !b->frozen) {
+        if (b->rows + 2 > b->maxrows) { b->frozen = 1; }
+        else printf("\033[%dA\033[J", b->rows);
+    }
+    if (b->frozen && b->drawn) return;      /* append-only: leave what is drawn */
+
+    printf("\342\224\214");                                  /* top left */
+    for (i = 0; i < want + 2; i++) printf("\342\224\200");
+    printf("\342\224\220\n");
+    for (q = p; q < e; ) {
+        adv = ai_row(q, (size_t)(e - q), want, &len);
+        if (!ai_fence(q, len)) {
+            int pad = want - ai_dw(q, len);
+            printf("\342\224\202 "); ai_put(q, len);
+            for (i = 0; i < pad; i++) putchar(' ');
+            printf(" \342\224\202\n");
+        }
+        q += adv ? adv : 1;
+    }
+    printf("\342\224\224");
+    for (i = 0; i < want + 2; i++) printf("\342\224\200");
+    printf("\342\224\230\n");
+    fflush(stdout);
+    b->rows  = rows + 2;
+    b->inner = want;
+    b->drawn = 1;
+    b->shown = b->n;
+    (void)final;
+}
+
+static int ai_sink(const char *frag, size_t n, int done, void *ud) {
+    AiBox *b = (AiBox *)ud;
+    long long now;
+    if (frag && n) {
+        if (b->n + n + 1 > b->cap) {
+            size_t c = b->cap ? b->cap * 2 : 4096;
+            char *q;
+            while (c < b->n + n + 1) c *= 2;
+            q = (char *)realloc(b->t, c);
+            if (!q) return 1;
+            b->t = q; b->cap = c;
+        }
+        memcpy(b->t + b->n, frag, n);
+        b->n += n; b->t[b->n] = 0;
+    }
+    /* Repaint only on a terminal. Piped into a file or another program, the
+     * cursor-up sequences are not control codes, they are CONTENT -- every
+     * intermediate frame would land in the output and the escape bytes with it.
+     * So off a tty the box is drawn exactly once, when the answer is complete,
+     * which is also what a caller reading our stdout actually wants. */
+    now = am_net_now_ms();
+    if (!b->live) { if (done) ai_box_draw(b, 1); return 0; }
+    if (b->drawn && b->shown == b->n) return 0;   /* nothing new to show */
+    if (done || !b->drawn || now - b->last >= AI_BOX_MS) {
+        ai_box_draw(b, done);
+        b->last = now;
+    }
+    return 0;
+}
+
+static A aisC(A x) {
+    char *sys = NULL, *usr = NULL;
+    AiBox b;
+    int idle = 0, width = 84, height = 1000, rc;
+    A r;
+
+    memset(&b, 0, sizeof b);
+    if (_t(x) == tA && _n(x) >= 2) {
+        A *v = _A(x);
+        sys = cstr(v[0]);
+        usr = cstr(v[1]);
+        if (_n(x) >= 3 && _tz(v[2])) idle   = (int)gl_(v[2]);
+        if (_n(x) >= 4 && _tz(v[3])) width  = (int)gl_(v[3]);
+        if (_n(x) >= 5 && _tz(v[4])) height = (int)gl_(v[4]);
+    } else {
+        return x(et0());
+    }
+    mr(x);
+    if (!usr) { free(sys); return pair(AMNET_EARG, am_net_strerror(AMNET_EARG)); }
+
+    if (width  < AI_BOX_MIN + 4) width  = AI_BOX_MIN + 4;
+    if (height < 6)              height = 6;
+    b.maxw    = width - 4;
+    b.maxrows = height - 2;
+    b.live    = isatty(1) ? 1 : 0;
+
+    rc = am_net_generate_stream(sys ? sys : "", usr, idle, ai_sink, &b);
+    free(sys); free(usr);
+
+    if (rc != AMNET_OK && !b.drawn) { free(b.t); return pair(rc, am_net_strerror(rc)); }
+    {   A a[2];
+        a[0] = ai(0);
+        a[1] = aCn((S)(b.t ? b.t : ""), (U)b.n);
+        r = aV(tA, 2, a);
+    }
+    free(b.t);
+    return r;
+}
+
 /* 2.  `aio -- switches, runtime reconfiguration, status                    */
 /* ======================================================================== */
 static A aioC(A x) {
@@ -458,6 +655,7 @@ static const char AI_USAGE[] =
 __attribute__((constructor))
 static void ai_register(void) {
     am_ext_verb("ai",  (void *)aiC);
+    am_ext_verb("ais", (void *)aisC);
     am_ext_verb("aio", (void *)aioC);
     am_ext_bs       = ai_bs;
     am_ext_hint     = ai_hint;
