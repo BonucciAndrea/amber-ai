@@ -26,6 +26,7 @@ output, and --slow lets a test drive the deadline path in src/net.c.
 
 amber-ai - GNU AGPLv3 - see LICENSE and NOTICE.
 """
+import codecs
 import json
 import re
 import socket
@@ -42,6 +43,19 @@ STREAM_DELAY = 0.0
 ANSWER_TAB = "select sym,px from trades"
 ANSWER_WHY = "MOCK-DIAGNOSIS: that name is not defined in this workspace."
 ANSWER_ANY = "MOCK-ANSWER: select last px by sym from trades"
+
+# --answer lets a test choose the exact shape of the reply. That matters for
+# the box renderer, which is fed whatever the model emits: trailing whitespace,
+# tabs, ANSI colour, CJK, an answer taller than the terminal. Backslash escapes
+# are interpreted so a shell can pass "42\n   \n" on one line.
+def set_answer(spec):
+    global ANSWER_ANY
+    # Only the escape SEQUENCES are decoded, not the whole string: the usual
+    # .encode().decode("unicode_escape") round trip is a latin-1 pipe and
+    # mangles every non-ASCII character that was already literal UTF-8.
+    ANSWER_ANY = re.sub(r"\\(?:[nrtf0]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})",
+                        lambda m: codecs.decode(m.group(0), "unicode_escape"),
+                        spec)
 
 
 def envelope(text, model):
@@ -142,6 +156,11 @@ def main():
             DELAY = float(args[i])
         elif a.startswith("--slow="):
             DELAY = float(a.split("=", 1)[1])
+        elif a == "--answer":
+            i += 1
+            set_answer(args[i])
+        elif a.startswith("--answer="):
+            set_answer(a.split("=", 1)[1])
         elif a == "--tokdelay":
             i += 1
             STREAM_DELAY = float(args[i])

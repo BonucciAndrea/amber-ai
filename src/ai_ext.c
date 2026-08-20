@@ -64,6 +64,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 #define AMBER_AI_VERSION "2.0.0"
 
@@ -169,25 +170,118 @@ typedef struct {
     int    maxw;                 /* terminal width - 4 */
     int    maxrows;              /* terminal height - 2 */
     int    drawn;
+    int    emitted;              /* content rows already printed (append mode) */
     int    frozen;               /* too tall to repaint: append-only from here */
     int    live;                 /* stdout is a terminal: repaint in place */
     size_t shown;                /* bytes already on screen */
     long long last;
 } AiBox;
 
-/* display columns: a UTF-8 continuation byte belongs to the previous character */
+/* ---- display width -------------------------------------------------------
+ * Counting one column per non-continuation byte is right for ASCII and wrong
+ * for everything a model actually emits. A CJK glyph or an emoji occupies TWO
+ * terminal columns; a combining mark or a variation selector occupies none.
+ * Get either wrong and every row after it is padded to the wrong length, which
+ * is a torn right border. */
+static unsigned ai_cp(const char *s, size_t n, size_t *adv) {
+    unsigned char c = (unsigned char)s[0];
+    unsigned cp; size_t need;
+    if (c < 0x80)        { *adv = 1; return c; }
+    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; need = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; need = 3; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; need = 4; }
+    else                 { *adv = 1; return 0xFFFD; }
+    if (need > n)        { *adv = n;  return 0xFFFD; }
+    {   size_t i;
+        for (i = 1; i < need; i++) cp = (cp << 6) | ((unsigned char)s[i] & 0x3F);
+    }
+    *adv = need;
+    return cp;
+}
+static int ai_cpw(unsigned cp) {
+    if (cp == 0xFE0F || (cp >= 0x0300 && cp <= 0x036F) ||
+        (cp >= 0x200B && cp <= 0x200F)) return 0;          /* zero width */
+    if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
+        (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+        (cp >= 0xFE30 && cp <= 0xFE6F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
+        (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+        (cp >= 0x20000)) return 2;                          /* double width */
+    return 1;
+}
 static int ai_dw(const char *s, size_t n) {
-    size_t i; int w = 0;
-    for (i = 0; i < n; i++) if ((s[i] & 0xC0) != 0x80) w++;
+    size_t i = 0, adv; int w = 0;
+    while (i < n) { w += ai_cpw(ai_cp(s + i, n - i, &adv)); i += adv ? adv : 1; }
     return w;
 }
 /* longest byte-prefix of s[0..n) that fits in `cols` display columns */
 static size_t ai_fit(const char *s, size_t n, int cols) {
-    size_t i; int w = 0;
-    for (i = 0; i < n; i++) {
-        if ((s[i] & 0xC0) != 0x80) { if (w == cols) return i; w++; }
+    size_t i = 0, adv; int w = 0;
+    while (i < n) {
+        int cw = ai_cpw(ai_cp(s + i, n - i, &adv));
+        if (w + cw > cols) return i;
+        w += cw; i += adv ? adv : 1;
     }
     return n;
+}
+
+/* ---- normalisation --------------------------------------------------------
+ * Everything that would make the drawn width differ from the measured width is
+ * removed here, once, before the box is laid out:
+ *   TAB      expands on screen to the next stop but measures as one column
+ *   ESC[..   is zero columns on screen and several to a byte counter
+ *   other C0 controls print as nothing, or as garbage
+ *   trailing spaces make an EMPTY line as wide as the box -- this is the one in
+ *            the report: an answer of "42" followed by a whitespace-only line
+ *            drew a 70-column box around two characters, overflowed the
+ *            terminal, wrapped, and tore the border. Trailing blank lines go
+ *            entirely; trailing spaces on a real line are trimmed.
+ */
+static void ai_norm(const char *src, size_t n, char **out, size_t *outn) {
+    size_t i = 0, o = 0, cap = n * 4 + 16, lastnb = 0, col = 0;
+    char *d = (char *)malloc(cap);
+    if (!d) { *out = NULL; *outn = 0; return; }
+    while (i < n) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == 0x1B) {                       /* CSI / escape sequence */
+            i++;
+            if (i < n && src[i] == '[') {
+                i++;
+                while (i < n && ((unsigned char)src[i] < 0x40 ||
+                                 (unsigned char)src[i] > 0x7E)) i++;
+                if (i < n) i++;                /* the final byte */
+            } else if (i < n) i++;
+            continue;
+        }
+        if (c == '\t') { int k = 4 - (int)(col % 4); while (k--) { d[o++] = ' '; col++; } i++; continue; }
+        if (c == '\r') { i++; continue; }
+        if (c == '\n') { while (o && d[o-1] == ' ') o--;   /* rtrim the line */
+                         d[o++] = '\n'; col = 0; i++; continue; }
+        if (c < 0x20 || c == 0x7F) { i++; continue; }
+        d[o++] = (char)c;
+        if ((c & 0xC0) != 0x80) col++;
+        i++;
+    }
+    while (o && d[o-1] == ' ') o--;            /* rtrim the last line */
+    for (i = 0; i < o; i++) if (d[i] != '\n') lastnb = i + 1;
+    o = lastnb;                                /* drop trailing blank lines */
+    d[o] = 0;
+    *out = d; *outn = o;
+}
+
+/* The terminal's width RIGHT NOW. repl.cols is sampled by the REPL and can be
+ * stale after a resize, or 999 when tput could not answer -- either way a box
+ * wider than the screen wraps, and a wrapped box breaks the repaint arithmetic
+ * as well as the border. One spare column, so a full-width row never trips the
+ * terminal's own auto-wrap at the last cell. */
+static int ai_termw(int fallback) {
+    struct winsize ws;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 8) return (int)ws.ws_col - 1;
+    return fallback;
+}
+static int ai_termh(int fallback) {
+    struct winsize ws;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 4) return (int)ws.ws_row - 1;
+    return fallback;
 }
 static void ai_put(const char *s, size_t n) { fwrite(s, 1, n, stdout); }
 
@@ -212,57 +306,101 @@ static int ai_fence(const char *s, size_t len) {
 }
 
 static void ai_box_draw(AiBox *b, int final) {
-    const char *p = b->t, *e = b->t + b->n;
-    int want = AI_BOX_MIN, rows = 0, i;
+    char *norm = NULL; size_t normn = 0;
+    const char *p, *e, *q;
+    int want, rows = 0, i, maxw, maxrows, first, n, limit;
     size_t adv, len;
-    const char *q;
 
-    /* widest natural line, capped at the terminal */
-    for (q = p; q < e; ) {
-        const char *nl = memchr(q, '\n', (size_t)(e - q));
-        size_t seg = nl ? (size_t)(nl - q) : (size_t)(e - q);
-        int w = ai_dw(q, seg);
-        if (w > want) want = w;
-        q = nl ? nl + 1 : e;
+    ai_norm(b->t ? b->t : "", b->n, &norm, &normn);
+    if (!norm) return;
+    p = norm; e = norm + normn;
+
+    /* Never wider or taller than the screen actually is. A box that overflows
+     * wraps, and a wrapped box breaks BOTH the border and the "cursor up N"
+     * arithmetic of the next repaint -- which is how one answer came to be
+     * drawn twice with a torn frame. */
+    maxw = ai_termw(b->maxw + 4) - 4;
+    if (maxw > b->maxw)    maxw = b->maxw;
+    if (maxw < AI_BOX_MIN) maxw = AI_BOX_MIN;
+    maxrows = ai_termh(b->maxrows + 2) - 2;
+    if (maxrows > b->maxrows) maxrows = b->maxrows;
+    if (maxrows < 3)          maxrows = 3;
+
+    if (b->frozen) want = b->inner;      /* locked to what is already on screen */
+    else {
+        want = AI_BOX_MIN;
+        for (q = p; q < e; ) {           /* widest natural line */
+            const char *nl = memchr(q, '\n', (size_t)(e - q));
+            size_t seg = nl ? (size_t)(nl - q) : (size_t)(e - q);
+            int w = ai_dw(q, seg);
+            if (w > want) want = w;
+            q = nl ? nl + 1 : e;
+        }
+        if (want > maxw) want = maxw;
     }
-    if (want > b->maxw) want = b->maxw;
 
-    /* count the rows this layout needs */
-    for (q = p; q < e; ) {
+    for (q = p; q < e; ) {               /* rows this layout needs */
         adv = ai_row(q, (size_t)(e - q), want, &len);
         if (!ai_fence(q, len)) rows++;
         q += adv ? adv : 1;
     }
-    if (rows == 0) rows = 1;
 
-    if (b->drawn && !b->frozen) {
-        if (b->rows + 2 > b->maxrows) { b->frozen = 1; }
-        else printf("\033[%dA\033[J", b->rows);
+    first = !b->frozen;
+    if (first) {
+        if (b->drawn) printf("\033[%dA\033[J", b->rows);   /* erase last frame */
+        /* Once the box is taller than the screen the top has scrolled away and
+         * "cursor up N" no longer addresses our own rows. Draw this frame in
+         * full, then go append-only: new rows are printed as they arrive and
+         * the bottom border is closed at the end. Nothing is dropped. */
+        if (rows + 2 > maxrows) { b->frozen = 1; b->inner = want; }
+        printf("\342\224\214");                            /* top left */
+        for (i = 0; i < want + 2; i++) printf("\342\224\200");
+        printf("\342\224\220\n");
     }
-    if (b->frozen && b->drawn) return;      /* append-only: leave what is drawn */
 
-    printf("\342\224\214");                                  /* top left */
-    for (i = 0; i < want + 2; i++) printf("\342\224\200");
-    printf("\342\224\220\n");
+    /* In append-only mode a row, once printed, can never be corrected -- so a
+     * row is only printed when it can no longer change. Wrapping is greedy and
+     * left to right, so every row but the LAST is already final; the last one
+     * is still growing until the answer ends. Without this the frame keeps its
+     * shape but the text is shredded: "row 7 of output" prints as "row". */
+    limit = rows;
+    if (b->frozen && !final) limit = rows - 1;
+    if (limit < 0) limit = 0;
+
+    n = 0;
     for (q = p; q < e; ) {
         adv = ai_row(q, (size_t)(e - q), want, &len);
         if (!ai_fence(q, len)) {
-            int pad = want - ai_dw(q, len);
-            printf("\342\224\202 "); ai_put(q, len);
-            for (i = 0; i < pad; i++) putchar(' ');
-            printf(" \342\224\202\n");
+            if (n < limit && (first || n >= b->emitted)) {  /* skip rows on screen */
+                int pad = want - ai_dw(q, len);
+                printf("\342\224\202 "); ai_put(q, len);
+                for (i = 0; i < pad; i++) putchar(' ');
+                printf(" \342\224\202\n");
+            }
+            n++;
         }
         q += adv ? adv : 1;
     }
-    printf("\342\224\224");
-    for (i = 0; i < want + 2; i++) printf("\342\224\200");
-    printf("\342\224\230\n");
+    if (n == 0 && first) {                                 /* nothing yet: one blank row */
+        printf("\342\224\202 ");
+        for (i = 0; i < want; i++) putchar(' ');
+        printf(" \342\224\202\n");
+        n = limit = 1;
+    }
+    if (n > limit) n = limit;
+
+    if (!b->frozen || final) {
+        printf("\342\224\224");                            /* bottom left */
+        for (i = 0; i < want + 2; i++) printf("\342\224\200");
+        printf("\342\224\230\n");
+    }
     fflush(stdout);
-    b->rows  = rows + 2;
-    b->inner = want;
-    b->drawn = 1;
-    b->shown = b->n;
-    (void)final;
+    b->emitted = n;
+    b->rows    = n + 2;
+    b->inner   = want;
+    b->drawn   = 1;
+    b->shown   = b->n;
+    free(norm);
 }
 
 static int ai_sink(const char *frag, size_t n, int done, void *ud) {
@@ -287,7 +425,9 @@ static int ai_sink(const char *frag, size_t n, int done, void *ud) {
      * which is also what a caller reading our stdout actually wants. */
     now = am_net_now_ms();
     if (!b->live) { if (done) ai_box_draw(b, 1); return 0; }
-    if (b->drawn && b->shown == b->n) return 0;   /* nothing new to show */
+    /* Nothing new to show -- but `done` must still get through: in append-only
+     * mode it is the call that prints the closing border. */
+    if (b->drawn && b->shown == b->n && !done) return 0;
     if (done || !b->drawn || now - b->last >= AI_BOX_MS) {
         ai_box_draw(b, done);
         b->last = now;
