@@ -20,7 +20,8 @@
 #                         assembly, every \ai sub-command that needs no network,
 #                         and the graceful-failure path (the endpoint is aimed
 #                         at the closed discard port, so it cannot block).
-#   4. tests/test_e2e.py  the whole thing driven through the real REPL against
+#   4b. tests/verify_train.k every expression in data/train.jsonl, re-run.
+#   5. tests/test_e2e.py  the whole thing driven through the real REPL against
 #                         tests/mock_backend.py: answers, \ai why, ghost text on
 #                         a pty, the off switch, all three response shapes, and
 #                         a check that Amber's own suite is unaffected.
@@ -134,7 +135,7 @@ out=$( cd "$WORK/amber" && ./amber tests/test_ai.k 2>&1 )
 echo "$out" | tail -4
 echo "$out" | grep -q '0 failures'; res $? "tests/test_ai.k"
 
-# ------------------------------------------------- 4b. the shipped seed corpus
+# ------------------------------------------------- 4a. the shipped seed corpus
 # Every example in lib/amber_ai_memory.k is replayed to the model as a few-shot
 # example AND offered back as a Tab candidate, so one that no longer parses is
 # worse than none: it teaches a wrong idiom and completes the user into an
@@ -150,6 +151,21 @@ ok=0
 echo "$out" | grep -q 'ALL SEED EXAMPLES RUN CLEANLY' || ok=1
 echo "$out" | grep -q 'EVERY CONTRAST HOLDS BOTH WAYS' || ok=1
 res $ok "tests/verify_memory.k"
+
+# --------------------------------------- 4c. the fine-tuning corpus
+# data/train.jsonl is a fine-tuning corpus, which makes a stale entry worse
+# than a stale doc example: whatever is in it is what a tuned model learns to
+# write, and nothing ever reads it again to notice it stopped parsing. Every
+# distinct expression it teaches is re-executed here against data/fixture.k,
+# through the same qsql.k rewriter the REPL puts a keystroke through, plus a
+# check that the ChatML shape itself is intact.
+say "tests/verify_train.k (data/train.jsonl)"
+mkdir -p "$WORK/amber/data"
+cp data/fixture.k data/loader.k data/train.jsonl "$WORK/amber/data/"
+cp tests/verify_train.k "$WORK/amber/tests/verify_train.k"
+out=$( cd "$WORK/amber" && ./amber tests/verify_train.k 2>&1 )
+echo "$out" | grep -E 'entries|distinct expressions|tests run'
+echo "$out" | grep -q '0 failures'; res $? "tests/verify_train.k"
 
 # ------------------------------------------------------------- 5. end to end
 say "tests/test_e2e.py (real REPL + mock backend)"
