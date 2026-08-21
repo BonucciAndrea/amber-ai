@@ -150,9 +150,24 @@ a1:ai.add["q";"select avg px by sym from trades";"trades"]
 a2:ai.add["q";"til 10";"x"]
 a3:ai.add["s";"trades:table(time sym px)";"trades"]
 t[`topPicksRelevant;*ai.top["avg px by sym";1;"q"];"select avg px by sym from trades"]
-t[`topRespectsN;   #ai.top["anything";1;"q"];1]
+t[`topRespectsN;   #ai.top["trades";1;"q"];1]
 t[`topFiltersKind; #ai.top["trades";9;"s"];1]
-t[`topAllKinds;    #ai.top["trades";9;""];3]
+/x An empty kind set searches every kind, so it reaches the `s` record that
+/x "q" filtered out. It does NOT reach `til 10`, which shares no word with the
+/x query -- see topFloorRejectsIrrelevant below. This used to want 3, back when
+/x a zero-overlap record was returned like any other.
+t[`topAllKinds;    #ai.top["trades";9;""];2]
+/x ---- the relevance floor -------------------------------------------------
+/x An exemplar must share at least ai.MINS words with the question, over the
+/x text AND the context. Without this every pick was a 0-overlap tie broken by
+/x position, which meant whatever the user last typed. Measured on the 344
+/x natural-language questions in data/train.jsonl, text-only scoring put the
+/x right answer among the three exemplars 0 times.
+t[`topFloorRejectsIrrelevant;#ai.top["anything at all";9;"q"];0]
+t[`topScoresContextField;    #ai.top["trades";9;"q"];1]
+t[`ovlCountsText;   ai.ovl[ai.words"avg px";ai.M 0];2]
+t[`ovlCountsContext;ai.ovl[ai.words"trades";ai.M 0];2]
+t[`ovlZeroWhenUnrelated;ai.ovl[ai.words"banana";ai.M 0];0]
 ai.M::()
 t[`topEmptyIsSafe; #ai.top["q";3;"q"];0]
 t[`wordsSplit;     ai.words"select px, avg(px) from t";("select";"px";"avg";"px";"from";,"t")]
@@ -198,11 +213,26 @@ t[`promptDropsColTypes;has[pq;"trades:table("];0]
 t[`promptHasExamples;  has[pq;"### Examples"];1]
 t[`nonDbQueryNoExamples;has[p;"### Examples"];0]
 t[`nonDbQueryNoSchema;  has[p;"### Schema"];0]
-/x A query too short to carry keywords retrieves nothing: matches would be
-/x coincidental, and every exemplar is paid for in prefill.
+/x A question that shares nothing with anything retrieves nothing -- and that
+/x is now a RELEVANCE test, not a length test. There used to be an ai.MINQ:15
+/x floor on the query's character count, which also blocked every short real
+/x question: "vwap by symbol" is 14 characters, and 41 of the 344 questions in
+/x data/train.jsonl were in that hole.
 t[`shortQueryNoExamples;#ai.exs"2+2";0]
-t[`longQueryHasExamples;0<#ai.exs"average price by symbol";1]
-t[`examplesAreCapped;   ai.NEX<#ai.exs"average price by symbol";0]
+t[`relevantQueryHasExamples;0<#ai.exs"average price of trades";1]
+t[`irrelevantQueryNoExamples;#ai.exs"average price by symbol";0]
+t[`examplesAreCapped;   ai.NEX<#ai.exs"average price of trades";0]
+/x ---- punctuation must not eat the last word ------------------------------
+/x ai.norm stripped only `,();`, so a question written as a sentence lost its
+/x final token: "Show all AAPL trades." tokenised to "trades." and never
+/x matched the keyword `trades`, so ai.dbq called it a non-data question and it
+/x got no schema and no exemplars at all.
+t[`normStripsFullStop;  *|ai.words"Show all AAPL trades.";"trades"]
+t[`normStripsQuestion;  *|ai.words"what is the vwap?";"vwap"]
+t[`dbqSeesSentence;     ai.dbq"Show all AAPL trades.";1]
+t[`dbqSeesTrailingStop; ai.dbq"Total volume per symbol.";1]
+t[`normHandlesAtom;     ai.norm"a";,"a"]
+t[`normHandlesEmpty;    ai.norm"";""]
 /x ai.ctx keeps the detail the compact schema drops.
 t[`statusCtxKeepsRows;  has[ai.ctx[];" rows]"];1]
 /x ---- generation rules live in the system prompt -------------------------
@@ -355,6 +385,6 @@ t[`unknownIsQuestion;0<#grab[ai.cmd;"how do I bucket by minute"];1]
 /x and nothing above may have left the interpreter in a bad state
 tk[`stillAlive;    "1+1"]
 
-hexpect[176]
+hexpect[188]
 hreport"AMBER AI AGENT"
 $[FAILN;`exit 1;]

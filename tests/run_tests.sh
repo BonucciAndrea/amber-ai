@@ -20,7 +20,9 @@
 #                         assembly, every \ai sub-command that needs no network,
 #                         and the graceful-failure path (the endpoint is aimed
 #                         at the closed discard port, so it cannot block).
-#   4b. tests/verify_train.k every expression in data/train.jsonl, re-run.
+#   4b. tests/verify_train.k every expression in data/train.jsonl, re-run,
+#                         plus a floor on how often the corpus is retrieved.
+#   4c. eval_model.py --selftest  the eval scorer, checked without a model.
 #   5. tests/test_e2e.py  the whole thing driven through the real REPL against
 #                         tests/mock_backend.py: answers, \ai why, ghost text on
 #                         a pty, the off switch, all three response shapes, and
@@ -164,8 +166,25 @@ mkdir -p "$WORK/amber/data"
 cp data/fixture.k data/loader.k data/train.jsonl "$WORK/amber/data/"
 cp tests/verify_train.k "$WORK/amber/tests/verify_train.k"
 out=$( cd "$WORK/amber" && ./amber tests/verify_train.k 2>&1 )
-echo "$out" | grep -E 'entries|distinct expressions|tests run'
+echo "$out" | grep -E 'entries|distinct expressions|seed corpus|retrieval|tests run'
 echo "$out" | grep -q '0 failures'; res $? "tests/verify_train.k"
+
+# ------------------------------ 4d. the eval scorer (no model needed)
+# tests/eval_model.py measures a real model against a held-out slice of the
+# corpus, which CI cannot do -- there is no model on a runner. What CI CAN do is
+# check the SCORER: that execution-comparison returns match/differs/error/empty
+# for cases with known answers, and that the kdb+ leak patterns fire on the
+# wrong lines and stay quiet on the right ones. Without this the harness could
+# report 100% on everything and nobody would find out.
+say "tests/eval_model.py --selftest (scorer + leak patterns)"
+cp tests/eval_score.k "$WORK/amber/tests/eval_score.k"
+if command -v python3 >/dev/null 2>&1; then
+  out=$( python3 tests/eval_model.py "$WORK/amber" --selftest 2>&1 )
+  echo "$out" | tail -2
+  echo "$out" | grep -q '^0 failures'; res $? "tests/eval_model.py --selftest"
+else
+  echo "  -> SKIP (no python3)"
+fi
 
 # ------------------------------------------------------------- 5. end to end
 say "tests/test_e2e.py (real REPL + mock backend)"

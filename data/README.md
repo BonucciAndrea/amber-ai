@@ -88,6 +88,60 @@ tr.show 0
 tr.verify 0
 ```
 
+## Does any of this reach the model?
+
+Two different questions, and they have different answers.
+
+**Without fine-tuning**, the corpus reaches the model only through retrieval:
+`ai.exs` picks `ai.NEX` (3) exemplars per prompt out of `lib/amber_ai_memory.k`.
+367 of the expressions here were promoted into that file with an **intent
+gloss** — the words people actually used to ask for them, taken from the
+phrasings in this dataset. That gloss is what makes them findable, because
+`ai.top` scores a record by word overlap and a record's text is *code*, which
+shares a word with an English question almost never.
+
+Measured on a held-out 30% of the promoted exemplars, same corpus, scoring
+alone:
+
+| | before | after |
+|---|---|---|
+| mean best-exemplar Jaccard vs the reference | 0.210 | **0.486** |
+| exemplars sharing the core construct (≥0.5) | 15/111 | **55/111** |
+| questions that retrieved nothing at all | 21/111 | **13/111** |
+
+In-index, over all 344 natural-language questions: the exemplars sent to the
+model contained the right answer **0** times before, **272** after.
+`tests/verify_train.k` gates on that number so it cannot silently return to
+zero.
+
+To see what a given question actually sends:
+
+```
+P:{[t;q]{`0:x}'"\n"\ai.prompt[t;q];}
+P[ai.T.q;"give me the volume weighted average price per symbol"]
+```
+
+**With fine-tuning**, use `tests/eval_model.py`. It holds out a stratified,
+deterministic slice, asks each question through the real `\ai` path, and scores
+every answer **by execution** — it runs the answer and the reference against
+`fixture.k` and compares the values, because there are many correct spellings of
+one query:
+
+```bash
+tests/eval_model.py /path/to/amber --split 0.15 --model qwen2.5-coder:7b --out before.json
+# ... fine-tune ...
+tests/eval_model.py /path/to/amber --split 0.15 --model my-tuned-model --out after.json
+```
+
+It reports `match / differs / error / empty` per category, and a **kdb+ leak
+rate**: the share of answers containing an idiom that belongs to kdb+ or ANSI
+SQL and does not work here. That second number is the one worth watching —
+accuracy can look fine while the model quietly writes ``sym in `AAPL`MSFT`` and
+`300 xbar time`.
+
+`--selftest` checks the scorer itself against cases with known verdicts and the
+leak patterns against known-bad lines; it needs no model and runs in CI.
+
 ## Rebuilding
 
 The corpus is generated, executed and only then written. To re-verify what is

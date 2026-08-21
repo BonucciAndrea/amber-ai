@@ -48,6 +48,9 @@ vt.N:tr.load vt.am,"/data/train.jsonl"
 `0:"data/train.jsonl: ",($vt.N)," entries"
 vt.n:0
 vt.bad:()
+/ 260 of 344, measured. Set well under the 280 actually achieved, so ordinary
+/ corpus edits do not trip it and a scoring regression does.
+vt.FLOOR:260
 vt.note:{[msg;c]vt.bad::vt.bad,,msg," <- ",c;}
 / `_` is the drop/floor verb, so it cannot be used as a throwaway name. Wrap
 / each in a lambda whose body ends in `;`, which discards the result instead.
@@ -73,6 +76,33 @@ vt.reset[]
 / model is not being taught to write.
 vt.tight:{[i]vt.n::vt.n+1;$[(tr.kind i)~`code;$[(tr.assistant i)~tr.verify i;0;vt.note["answer differs from the verified expression";tr.verify i]];0];}
 vt.each[vt.tight;!vt.N]
+
+
+/ ---- 4. the corpus has to actually REACH the model -------------------------
+/ A dataset that no prompt ever retrieves from is decoration. This gate takes
+/ the natural-language questions out of train.jsonl, runs each through the real
+/ retrieval path -- ai.exs, the same call ai.prompt makes -- and counts how
+/ often the exemplars handed to the model contain the expression the dataset
+/ says is the answer.
+/ .
+/ It is a floor, not a target, and it exists because that number was once ZERO.
+/ ai.score matched the question against the record's TEXT, the text is code, and
+/ code shares a word with an English question almost never; every pick was a
+/ 0-overlap tie broken by position. Nothing failed, nothing warned, and the
+/ three "examples" in each prompt were whatever the user had most recently
+/ typed. Only a measurement catches that, so here it is measured.
+dir:vt.am
+. `c$1:vt.am,"/lib/ai.k"
+vt.seedn:ai.loadseed[]
+`0:"seed corpus: ",($vt.seedn)," exemplars"
+vt.nlq:&(`nl2qsql=tr.cat'!vt.N)&`code=tr.kind'!vt.N
+vt.hit:{[i]e:ai.exs tr.user i;$[#e;|/e~\:tr.verify i;0]}
+vt.H:vt.hit'vt.nlq
+vt.rate:+/vt.H
+`0:"retrieval: ",($vt.rate)," of ",($#vt.nlq)," questions retrieve their own answer"
+vt.n::vt.n+1
+$[vt.FLOOR>vt.rate;vt.note["retrieval fell below the floor -- see ai.ovl / ai.MINS / ai.norm";($vt.rate)," < ",$vt.FLOOR];0]
+vt.each[vt.shape;0#0]
 
 `0:($vt.n)," tests run, ",($#vt.bad)," failures"
 vt.each[{`0:"  FAIL: ",x};vt.bad]

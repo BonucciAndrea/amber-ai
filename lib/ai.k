@@ -134,7 +134,18 @@ ai.loadseed:{ai.SEED::()
   #ai.SEED}
 
 / ---- relevance ranking (the retrieval half of the loop) -------------------
-ai.norm:{lower ssr[ssr[ssr[ssr[x;",";" "];"(";" "];")";" "];";";" "]}
+/ Punctuation is stripped to spaces before anything is matched -- ALL of it,
+/ not the four characters this used to handle. The old list was `,();`, which
+/ meant a question written as a sentence lost its last word: "Show all AAPL
+/ trades." tokenised to "trades." and never matched the keyword `trades`, so
+/ ai.dbq called it a non-data question, and a non-data question gets no schema
+/ and no exemplars at all. 40 of the 344 questions in data/train.jsonl were
+/ silently in that hole -- every one of them ended in a full stop.
+ai.PUNCT:",();:.?!`[]{}/\\\"'"
+/x A char ATOM is not a one-element char vector in this dialect, and a record
+/x field can be a symbol or an empty list, so normalise the shape before the
+/x amend -- @[x;i;:;" "] raises 'type on any of the three.
+ai.norm:{t:$[`c~@x;,x;x];$[(~`C~@t)|0=#t;"";lower @[t;&in[t;ai.PUNCT];:;" "]]}
 ai.words:{w@&0<#'w:" "\ai.norm x}
 / Retrieval matches a SET of kinds (a char vector such as "qap"), because what
 / makes a good few-shot example is anything the user actually ran or accepted --
@@ -143,13 +154,40 @@ ai.words:{w@&0<#'w:" "\ai.norm x}
 /x has to be normalised before it can be searched.
 ai.cv:{$[`c~@x;,x;x]}
 ai.kmatch:{[ks;r]k:ai.cv ks;$[0=#k;1;in[*ai.cv r 0;k]]}
-ai.score:{[qw;r](+/in[ai.words[r 3];qw])+0.5*r 2}
+/ OVERLAP is counted over BOTH stored fields -- the text (r 3) and the context
+/ (r 4). Scoring the text alone was measurably useless for the thing retrieval
+/ exists to serve: a record's text is CODE, a question is English, and the two
+/ share a word almost never. Measured over the 344 natural-language questions in
+/ data/train.jsonl, the exemplars picked by text-only scoring contained the
+/ right answer 0 times. Not rarely -- never. Every pick was a 0-overlap tie
+/ broken by position, which put whatever the user had most recently typed at the
+/ top: on a fresh session the three "examples" sent to the model were `gentq
+/ 2000` and two lines of scratch.
+/ .
+/ The context field already carries the words a person would actually use
+/ ("trades aggregation", "volume weighted average price per symbol"), for the
+/ corpus and for the user's own records alike, so scoring it costs one term and
+/ turns the ranking from noise into retrieval.
+ai.ovl:{[qw;r](+/in[ai.words[r 3];qw])+(+/in[ai.words[r 4];qw])}
+ai.score:{[qw;r]ai.ovl[qw;r]+0.5*r 2}
+/ ai.MINS: an exemplar has to share at least this many words with the question.
+/ The floor is on OVERLAP, not on the score, and that distinction is the whole
+/ point: a frequently-used personal record earns +0.5 per use, so a score floor
+/ would let a much-repeated but irrelevant line through -- which is exactly the
+/ crowding this is here to stop. Zero shared words, no exemplar, however often
+/ you have run it.
+ai.MINS:1
 ai.top:{[q;n;k]
   a:ai.M,ai.SEED
   $[0=#a;:();0]
   m:a@&ai.kmatch[k]'a
   $[0=#m;:();0]
-  s:ai.score[ai.words q]'m
+  qw:ai.words q
+  o:ai.ovl[qw]'m
+  i:&~o<ai.MINS
+  $[0=#i;:();0]
+  m:m@i
+  s:ai.score[qw]'m
   {x 3}'m@(n&#m)#idesc s}
 
 / ============================================================================
@@ -195,11 +233,16 @@ ai.blk:{[h;b]$[0=#b;();(,"### ",h),$[`C~@b;,b;b]]}
 / .
 / ai.SMAX  most schemas named before the rest are counted rather than listed.
 / ai.NEX   exemplars replayed. Ranked, so 3 good ones beat 4 mediocre ones.
-/ ai.MINQ  below this length a query carries no keywords worth matching on:
-/          "2+2" retrieves by coincidence, so retrieve nothing.
+/ .
+/ There is no length floor any more. There used to be one -- ai.MINQ:15 -- on
+/ the reasoning that a short query carries no keywords worth matching on. It
+/ also silently blocked every short REAL question: "vwap by symbol" is 14
+/ characters, so it got the schema, got the contrast block, and got no exemplars
+/ at all. 41 of the 344 questions in data/train.jsonl were in that hole. The
+/ relevance floor in ai.top does the same job honestly: "2+2" retrieves nothing
+/ because it SHARES nothing, not because it is short.
 ai.SMAX:12
 ai.NEX:3
-ai.MINQ:15
 
 / Compact schema for the MODEL. ai.ctx[] stays exactly as it was for
 / `\ai status`, where a human wants the types, attributes and row counts; the
@@ -247,7 +290,7 @@ ai.XB:("bars:update tb:xbar[300;time] from trades";"select avg px by sym,tb from
 
 ai.exs:{[q]
   b:ai.wantbar q
-  $[(~b)&(ai.MINQ>#q)|~ai.dbq q;:();0]
+  $[(~b)&~ai.dbq q;:();0]
   e:$[ai.dbq q;ai.top[q;ai.NEX;ai.RK];()]
   $[b;ai.NEX#ai.XB,e;e]}
 / A non-data question gets NO schema and NO exemplars. That is a token saving,
